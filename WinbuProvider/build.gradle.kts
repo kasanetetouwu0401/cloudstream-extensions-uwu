@@ -1,9 +1,10 @@
-version = 4
+version = 1
 
 cloudstream {
     language = "id"
     description = "Winbu — Streaming Anime, Movie and TV Series"
-    authors = listOf("Miku")
+    authors = listOf("CodeSannz")
+    isCrossPlatform = true
     status = 1
     tvTypes = listOf(
         "Movie",

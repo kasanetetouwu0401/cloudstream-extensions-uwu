@@ -1,13 +1,13 @@
 // use an integer for version numbers
-version = 4
+version = 3
 
 
 cloudstream {
     language = "id"
     // All of these properties are optional, you can safely remove them
 
-    description = "OtakuDesu — Streaming Anime Subtitle Indonesia"
-    authors = listOf("Miku")
+    // description = "Lorem Ipsum"
+    authors = listOf("Hexated")
 
     /**
      * Status int as the following:
@@ -23,5 +23,5 @@ cloudstream {
         "OVA",
     )
 
-    iconUrl = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRr-sfek8gXmLpcAppEpaYbUDVtndQbCm_boh1-E91QrmSvsw-2l3-s2JOP&s=10"
+    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://otakudesu.cloud&size=%size%"
 }

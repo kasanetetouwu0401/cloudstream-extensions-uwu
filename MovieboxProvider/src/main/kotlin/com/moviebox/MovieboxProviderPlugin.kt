@@ -1,12 +1,13 @@
-package com.moviebox
+package com.MovieBox
 
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
 
 @CloudstreamPlugin
-class MovieboxProviderPlugin : Plugin() {
+class MovieBoxProviderPlugin: Plugin() {
     override fun load(context: Context) {
-        registerMainAPI(MovieboxProvider())
+        // All providers should be added in this manner. Please don't edit the providers list directly.
+        registerMainAPI(MovieBoxProvider())
     }
 }

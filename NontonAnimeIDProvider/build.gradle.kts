@@ -1,13 +1,13 @@
 // use an integer for version numbers
-version = 3
+version = 23
 
 
 cloudstream {
     language = "id"
     // All of these properties are optional, you can safely remove them
 
-     description = "NontonAnimeID — Streaming Anime Subtitle Indonesia"
-     authors = listOf("Miku")
+    // description = "Lorem Ipsum"
+     authors = listOf("Hexated, Duro92")
 
     /**
      * Status int as the following:

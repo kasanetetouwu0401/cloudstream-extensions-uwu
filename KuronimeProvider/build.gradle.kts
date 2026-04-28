@@ -1,13 +1,13 @@
 // use an integer for version numbers
-version = 3
+version = 21
 
 
 cloudstream {
     language = "id"
     // All of these properties are optional, you can safely remove them
 
-    description = "Kuronime — Streaming Anime Subtitle Indonesia"
-     authors = listOf("Miku")
+    // description = "Lorem Ipsum"
+     authors = listOf("Hexated")
 
     /**
      * Status int as the following:
@@ -23,5 +23,5 @@ cloudstream {
         "OVA",
     )
 
-    iconUrl = "https://play-lh.googleusercontent.com/EFMkS1T-8txjLFIl9QxjcTRLa7a7Muv08C04b7ongYgodoY_b2T3GpxzGAQEx-eitfQ=w256"
+    iconUrl = "https://www.google.com/s2/favicons?domain=45.12.2.2&sz=%size%"
 }
