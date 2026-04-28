@@ -1,4 +1,4 @@
-Version = 1
+version = 1
 
 cloudstream {
     language = "id"
