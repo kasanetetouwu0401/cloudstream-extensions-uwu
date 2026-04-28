@@ -24,5 +24,5 @@ cloudstream {
     tvTypes = listOf("AnimeMovie","Anime","Cartoon")
     iconUrl = "https://animexin.dev/wp-content/uploads/2020/06/animexinv1.png"
 
-    isCrossPlatform = true
+    
 }

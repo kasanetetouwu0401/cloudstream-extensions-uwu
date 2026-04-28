@@ -24,5 +24,5 @@ cloudstream {
     tvTypes = listOf("AnimeMovie","Anime")
     iconUrl="https://animekhor.org/wp-content/uploads/2021/11/AnimeKhor_darkmode.png"
 
-    isCrossPlatform = true
+    
 }

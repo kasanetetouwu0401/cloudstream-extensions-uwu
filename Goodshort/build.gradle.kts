@@ -17,6 +17,6 @@ cloudstream {
         "TvSeries",
         "AsianDrama",
     )
-    isCrossPlatform = true
+    
     iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://goodshort-streaming.vercel.app&size=%size%"
 }

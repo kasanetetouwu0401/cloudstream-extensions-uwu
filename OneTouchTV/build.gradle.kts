@@ -24,5 +24,5 @@ cloudstream {
 
     iconUrl = "https://www.google.com/s2/favicons?domain=onetouchtv.xyz/&sz=%size%"
 
-    isCrossPlatform = true
+    
 }

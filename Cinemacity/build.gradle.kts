@@ -22,5 +22,5 @@ cloudstream {
     language = "id"
     iconUrl = "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/Icons/Cinemacity.png"
 
-    isCrossPlatform = false
+    
 }

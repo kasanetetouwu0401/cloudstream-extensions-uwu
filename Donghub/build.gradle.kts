@@ -23,5 +23,5 @@ cloudstream {
     tvTypes = listOf("AnimeMovie","Anime","Cartoon")
     iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://donghub.vip&size=%size%"
 
-    isCrossPlatform = false
+    
 }
