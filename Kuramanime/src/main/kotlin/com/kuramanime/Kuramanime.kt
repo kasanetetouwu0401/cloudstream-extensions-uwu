@@ -3,10 +3,11 @@ package com.kuramanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.*
-import com.whl.quickjs.wrapper.QuickJSContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.mozilla.javascript.Context
+import org.mozilla.javascript.Scriptable
 import kotlin.random.Random
 
 class Kuramanime : MainAPI() {
@@ -314,6 +315,7 @@ class Kuramanime : MainAPI() {
                 Jsoup.parse(pageResponse.text, episodeUrl)
             }
 
+            // Ekstrak CSRF Token buat header request API
             val csrfToken = document.selectFirst("meta[name=csrf-token]")?.attr("content").orEmpty()
             val baseHeaders = mutableMapOf<String, String>().apply {
                 if (csrfToken.isNotBlank()) put("X-CSRF-TOKEN", csrfToken)
@@ -326,6 +328,7 @@ class Kuramanime : MainAPI() {
                 ?.ifBlank { null }
                 ?: "${episodeUrl.trimEnd('/')}/check-episode"
             
+            // Ambil path script rahasia leviathan.js
             val tokenAuthJsPath = document.selectFirst("#tokenAuthJs")?.attr("value")?.trim()?.ifBlank { null }
             val routeScriptName = document.selectFirst("[data-kk]")?.attr("data-kk")?.trim()?.ifBlank { null }
             
@@ -344,6 +347,7 @@ class Kuramanime : MainAPI() {
                     listOf(ServerOption("kuramadrive", "Kuramadrive"))
                 }
 
+            // Unduh file leviathan.js
             val leviathanJsText = if (!tokenAuthJsPath.isNullOrBlank()) {
                 val jsUrl = if (tokenAuthJsPath.startsWith("http")) tokenAuthJsPath else "$mainUrl${if (tokenAuthJsPath.startsWith("/")) "" else "/"}$tokenAuthJsPath"
                 app.get(
@@ -353,34 +357,46 @@ class Kuramanime : MainAPI() {
                 ).also { mergeCookies(cookieJar, it.cookies) }.text
             } else ""
 
+            // Interceptor Rhino ala Miku untuk mendapatkan Bearer Token!
             var dynamicAuthToken = ""
             if (leviathanJsText.isNotBlank()) {
-                dynamicAuthToken = runCatching {
-                    QuickJSContext.create().use { ctx ->
-                        ctx.evaluate("""
-                            var window = {};
-                            var extractedToken = "";
-                            var ${'$'} = {
-                                ajax: function(opt) {
-                                    if (opt && opt.headers && opt.headers.Authorization) {
-                                        extractedToken = opt.headers.Authorization;
-                                    }
-                                    return {};
+                var cx: Context? = null
+                try {
+                    cx = Context.enter()
+                    // Miku atur optimizationLevel ke -1 agar aman di Android (Mode Interpretatif)
+                    cx.optimizationLevel = -1 
+                    val scope: Scriptable = cx.initStandardObjects()
+                    
+                    val jsCode = """
+                        var window = {};
+                        var extractedToken = "";
+                        var ${'$'} = {
+                            ajax: function(opt) {
+                                if (opt && opt.headers && opt.headers.Authorization) {
+                                    extractedToken = opt.headers.Authorization;
                                 }
-                            };
-                            
-                            try {
-                                $leviathanJsText
-                            } catch(e) {}
-                            
-                            if (typeof window.kdrive_route === 'function') {
-                                try { window.kdrive_route(); } catch(e) {}
+                                return {};
                             }
-                            
-                            extractedToken;
-                        """.trimIndent()) as? String
-                    }?.replace("Bearer ", "")?.trim() ?: ""
-                }.getOrDefault("")
+                        };
+                        
+                        try {
+                            $leviathanJsText
+                        } catch(e) {}
+                        
+                        if (typeof window.kdrive_route === 'function') {
+                            try { window.kdrive_route(); } catch(e) {}
+                        }
+                        
+                        extractedToken;
+                    """.trimIndent()
+                    
+                    val result = cx.evaluateString(scope, jsCode, "MikuTokenStealer", 1, null)
+                    dynamicAuthToken = Context.toString(result).replace("Bearer ", "").trim()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    Context.exit()
+                }
             }
 
             val jsEnv = when {
@@ -482,6 +498,7 @@ class Kuramanime : MainAPI() {
                     append(resolvedPage)
                 }
 
+                // Masukkan Dynamic Token curian kita ke header Authorization!
                 val secureHeaders = baseHeaders.toMutableMap().apply {
                     put("Origin", mainUrl)
                     put("X-Requested-With", "XMLHttpRequest")
