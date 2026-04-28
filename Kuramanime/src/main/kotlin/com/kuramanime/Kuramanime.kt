@@ -3,12 +3,12 @@ package com.kuramanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.network.CloudflareInterceptor
+import com.lagradost.cloudstream3.network.WebViewResolver
 import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import org.mozilla.javascript.Context
-import org.mozilla.javascript.Scriptable
 import kotlin.random.Random
 
 class Kuramanime : MainAPI() {
@@ -17,6 +17,12 @@ class Kuramanime : MainAPI() {
     override var lang = "id"
     override val hasMainPage = true
     override val hasDownloadSupport = true
+
+    // Senjata rahasia Miku untuk menembus Cloudflare dan WAF! 
+    override val interceptors = listOf(
+        CloudflareInterceptor(),
+        WebViewResolver(Regex("""kuramanime\.ink"""))
+    )
 
     override val supportedTypes = setOf(
         TvType.Anime,
@@ -316,7 +322,7 @@ class Kuramanime : MainAPI() {
                 Jsoup.parse(pageResponse.text, episodeUrl)
             }
 
-            // Ekstrak CSRF Token
+            // 1. Ekstrak CSRF Token dinamis
             val csrfToken = document.selectFirst("meta[name=csrf-token]")?.attr("content").orEmpty()
             val baseHeaders = mutableMapOf<String, String>().apply {
                 if (csrfToken.isNotBlank()) put("X-CSRF-TOKEN", csrfToken)
@@ -324,101 +330,39 @@ class Kuramanime : MainAPI() {
 
             val keepAliveUrl = document.selectFirst("#keepAliveTokenRoute")?.attr("value")?.ifBlank { null } ?: "$mainUrl/misc/token/keep-alive"
             val checkEpisodeUrl = document.selectFirst("#checkEp")?.attr("value")?.ifBlank { null } ?: "${episodeUrl.trimEnd('/')}/check-episode"
-            val tokenAuthJsPath = document.selectFirst("#tokenAuthJs")?.attr("value")?.trim()?.ifBlank { null }
+            val refreshTokenUrl = document.selectFirst("#refreshTokenUrl")?.attr("value")?.ifBlank { null } ?: "$mainUrl/misc/token/refresh-token"
             
-            // Mengambil dinamis route attribute dari sizzlyb.js ala Miku!
+            // 2. Ambil atribut dinamis rute dari sizzlyb.js
             val sizzlybUrl = document.selectFirst("script[src*=\"sizzlyb\"]")?.attr("abs:src")
             var dynamicRouteAttr = "data-kk"
 
             if (!sizzlybUrl.isNullOrBlank()) {
-                val sizzlybText = app.get(
-                    sizzlybUrl,
-                    referer = episodeUrl,
-                    cookies = cookieJar
-                ).also { mergeCookies(cookieJar, it.cookies) }.text
-                
+                val sizzlybText = app.get(sizzlybUrl, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text
                 val attrMatch = Regex("""MIX_JS_ROUTE_PARAM_ATTR\s*:\s*["']([^"']+)["']""").find(sizzlybText)
-                if (attrMatch != null) {
-                    dynamicRouteAttr = attrMatch.groupValues[1]
-                }
+                if (attrMatch != null) dynamicRouteAttr = attrMatch.groupValues[1]
             }
 
             val routeScriptName = document.selectFirst("[$dynamicRouteAttr]")?.attr(dynamicRouteAttr)?.trim()?.ifBlank { null }
             
+            // 3. Ambil Bearer Token langsung tembak API (runBlocking dijaga tetap ada!)
+            var dynamicAuthToken = ""
+            runBlocking {
+                try {
+                    val tokenResponse = app.get(refreshTokenUrl, headers = baseHeaders, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }
+                    val tokenMatch = Regex("""\"token\"\s*:\s*\"([^\"]+)\"""").find(tokenResponse.text)
+                    if (tokenMatch != null) {
+                        dynamicAuthToken = tokenMatch.groupValues[1]
+                    }
+                } catch (e: Exception) { 
+                    e.printStackTrace()
+                }
+            }
+
             val serverOptions = document.select("option[value]").mapNotNull { option ->
                 val value = option.attr("value").trim().ifBlank { return@mapNotNull null }
                 val label = option.text().substringBefore("(").replace("\\s+".toRegex(), " ").trim().ifBlank { value }
                 ServerOption(value, label)
             }.distinctBy { it.value.lowercase() }.ifEmpty { listOf(ServerOption("kuramadrive", "Kuramadrive")) }
-
-            val leviathanJsText = if (!tokenAuthJsPath.isNullOrBlank()) {
-                val jsUrl = if (tokenAuthJsPath.startsWith("http")) tokenAuthJsPath else "$mainUrl${if (tokenAuthJsPath.startsWith("/")) "" else "/"}$tokenAuthJsPath"
-                app.get(jsUrl, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text
-            } else ""
-
-            var dynamicAuthToken = ""
-            if (leviathanJsText.isNotBlank()) {
-                runBlocking {
-                    var cx: Context? = null
-                    try {
-                        cx = Context.enter()
-                        cx.optimizationLevel = -1
-                        cx.languageVersion = Context.VERSION_ES6
-                        val scope: Scriptable = cx.initStandardObjects()
-                        
-                        val cleanJs = leviathanJsText
-                            .replace("async function", "function")
-                            .replace("await ", "")
-                        
-                        val jsCode = """
-                            var extractedToken = "";
-                            var window = { location: { href: '$mainUrl' } };
-                            var document = {
-                                getElementById: function(id) { return { value: 's1', getAttribute: function() { return ''; }, style: {} }; },
-                                createElement: function() { return { style: {} }; },
-                                querySelector: function() { return { getAttribute: function() { return ''; } }; }
-                            };
-                            var navigator = { userAgent: 'Mozilla/5.0' };
-                            
-                            var ${'$'} = function() { return ${'$'}; };
-                            ${'$'}.ajax = function(opt) {
-                                if (opt && opt.headers && opt.headers.Authorization) {
-                                    extractedToken = opt.headers.Authorization;
-                                }
-                                return { done: function(cb) { return { fail: function() {} }; } };
-                            };
-                            
-                            var fetch = function(url, opt) {
-                                if (opt && opt.headers && opt.headers.Authorization) {
-                                    extractedToken = opt.headers.Authorization;
-                                }
-                                return { then: function() { return { catch: function() {} }; } };
-                            };
-
-                            try {
-                                $cleanJs
-                            } catch(e) {}
-                            
-                            for (var prop in window) {
-                                if (typeof window[prop] === 'function') {
-                                    try {
-                                        window[prop]('url', 'POST', {}, 's1', 'html', null, '1');
-                                    } catch(e) {}
-                                }
-                            }
-                            
-                            extractedToken;
-                        """.trimIndent()
-                        
-                        val result = cx.evaluateString(scope, jsCode, "MikuToken", 1, null)
-                        dynamicAuthToken = Context.toString(result).replace("Bearer ", "").trim()
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    } finally {
-                        Context.exit()
-                    }
-                }
-            }
 
             val jsEnv = when {
                 !routeScriptName.isNullOrBlank() -> {
@@ -470,6 +414,7 @@ class Kuramanime : MainAPI() {
                     append(resolvedPage)
                 }
 
+                // 4. Masukkan Authorization Bearer Token hasil API tadi
                 val secureHeaders = baseHeaders.toMutableMap().apply {
                     put("Origin", mainUrl)
                     put("X-Requested-With", "XMLHttpRequest")
@@ -486,9 +431,7 @@ class Kuramanime : MainAPI() {
                     cookies = cookieJar,
                 ).also { mergeCookies(cookieJar, it.cookies) }
 
-                val secureDocument = runCatching { secureResponse.document }.getOrElse {
-                    Jsoup.parse(secureResponse.text, secureUrl)
-                }
+                val secureDocument = runCatching { secureResponse.document }.getOrElse { Jsoup.parse(secureResponse.text, secureUrl) }
                 
                 var iframeUrl = secureDocument.selectFirst("iframe[src]")?.attr("abs:src")?.ifBlank { null }
                 if (iframeUrl == null) {
@@ -511,14 +454,10 @@ class Kuramanime : MainAPI() {
             emitted.isNotEmpty()
         }.getOrDefault(false)
 
-        if (nativeResolved) {
-            return true
-        }
+        if (nativeResolved) return true
 
         val fallbackResponse = app.get(episodeUrl, referer = "$mainUrl/")
-        val fallbackDocument = runCatching { fallbackResponse.document }.getOrElse {
-            Jsoup.parse(fallbackResponse.text, episodeUrl)
-        }
+        val fallbackDocument = runCatching { fallbackResponse.document }.getOrElse { Jsoup.parse(fallbackResponse.text, episodeUrl) }
         extractFromDocument(fallbackDocument)
         extractFromText(fallbackResponse.text)
         return emitted.isNotEmpty()
@@ -574,11 +513,7 @@ class Kuramanime : MainAPI() {
         while (pendingPages.isNotEmpty() && visitedPages.size < 64) {
             val pageUrl = pendingPages.removeFirst()
             if (!visitedPages.add(pageUrl)) continue
-            val document = if (pageUrl == seriesUrl) {
-                firstDocument
-            } else {
-                app.get(pageUrl).document
-            }
+            val document = if (pageUrl == seriesUrl) firstDocument else app.get(pageUrl).document
             collectFromDocument(document)
         }
 
