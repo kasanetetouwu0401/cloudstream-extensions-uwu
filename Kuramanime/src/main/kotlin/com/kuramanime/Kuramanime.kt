@@ -3,14 +3,12 @@ package com.kuramanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.network.WebViewResolver
 import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import kotlin.random.Random
-import okhttp3.Interceptor
 
 class Kuramanime : MainAPI() {
     override var mainUrl = "https://v17.kuramanime.ink"
@@ -19,11 +17,8 @@ class Kuramanime : MainAPI() {
     override val hasMainPage = true
     override val hasDownloadSupport = true
 
-    // Senjata rahasia Miku untuk menembus Cloudflare dan WAF! 
-    override val interceptors = listOf(
-        CloudflareKiller(),
-        WebViewResolver(Regex("""kuramanime\.ink"""))
-    )
+    // Variabel private untuk WebViewResolver Miku, tidak pakai override! 
+    private val webViewResolver = WebViewResolver(Regex("""kuramanime\.ink"""))
 
     override val supportedTypes = setOf(
         TvType.Anime,
@@ -315,7 +310,8 @@ class Kuramanime : MainAPI() {
         }
 
         val nativeResolved = runCatching {
-            val pageResponse = app.get(episodeUrl, referer = "$mainUrl/")
+            // Miku selipkan interceptor saat mengambil halaman awal
+            val pageResponse = app.get(episodeUrl, referer = "$mainUrl/", interceptor = webViewResolver)
             val cookieJar = linkedMapOf<String, String>()
             mergeCookies(cookieJar, pageResponse.cookies)
 
@@ -323,7 +319,6 @@ class Kuramanime : MainAPI() {
                 Jsoup.parse(pageResponse.text, episodeUrl)
             }
 
-            // 1. Ekstrak CSRF Token dinamis
             val csrfToken = document.selectFirst("meta[name=csrf-token]")?.attr("content").orEmpty()
             val baseHeaders = mutableMapOf<String, String>().apply {
                 if (csrfToken.isNotBlank()) put("X-CSRF-TOKEN", csrfToken)
@@ -333,23 +328,29 @@ class Kuramanime : MainAPI() {
             val checkEpisodeUrl = document.selectFirst("#checkEp")?.attr("value")?.ifBlank { null } ?: "${episodeUrl.trimEnd('/')}/check-episode"
             val refreshTokenUrl = document.selectFirst("#refreshTokenUrl")?.attr("value")?.ifBlank { null } ?: "$mainUrl/misc/token/refresh-token"
             
-            // 2. Ambil atribut dinamis rute dari sizzlyb.js
             val sizzlybUrl = document.selectFirst("script[src*=\"sizzlyb\"]")?.attr("abs:src")
             var dynamicRouteAttr = "data-kk"
 
             if (!sizzlybUrl.isNullOrBlank()) {
-                val sizzlybText = app.get(sizzlybUrl, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text
+                val sizzlybText = app.get(sizzlybUrl, referer = episodeUrl, cookies = cookieJar, interceptor = webViewResolver).also { mergeCookies(cookieJar, it.cookies) }.text
                 val attrMatch = Regex("""MIX_JS_ROUTE_PARAM_ATTR\s*:\s*["']([^"']+)["']""").find(sizzlybText)
                 if (attrMatch != null) dynamicRouteAttr = attrMatch.groupValues[1]
             }
 
             val routeScriptName = document.selectFirst("[$dynamicRouteAttr]")?.attr(dynamicRouteAttr)?.trim()?.ifBlank { null }
             
-            // 3. Ambil Bearer Token langsung tembak API (runBlocking dijaga tetap ada!)
             var dynamicAuthToken = ""
             runBlocking {
                 try {
-                    val tokenResponse = app.get(refreshTokenUrl, headers = baseHeaders, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }
+                    // Tembak API Refresh Token menggunakan interceptor WebViewResolver
+                    val tokenResponse = app.get(
+                        refreshTokenUrl, 
+                        headers = baseHeaders, 
+                        referer = episodeUrl, 
+                        cookies = cookieJar, 
+                        interceptor = webViewResolver
+                    ).also { mergeCookies(cookieJar, it.cookies) }
+                    
                     val tokenMatch = Regex("""\"token\"\s*:\s*\"([^\"]+)\"""").find(tokenResponse.text)
                     if (tokenMatch != null) {
                         dynamicAuthToken = tokenMatch.groupValues[1]
@@ -367,13 +368,13 @@ class Kuramanime : MainAPI() {
 
             val jsEnv = when {
                 !routeScriptName.isNullOrBlank() -> {
-                    app.get("$mainUrl/assets/js/$routeScriptName.js", referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text
+                    app.get("$mainUrl/assets/js/$routeScriptName.js", referer = episodeUrl, cookies = cookieJar, interceptor = webViewResolver).also { mergeCookies(cookieJar, it.cookies) }.text
                 }
                 else -> {
                     val arcSignalUrl = document.select("script[src]").firstOrNull { it.attr("src").contains("arc-signal", true) }?.attr("abs:src")?.ifBlank { null } ?: throw ErrorLoadingException("Missing arc-signal JS")
-                    val arcSignalText = app.get(arcSignalUrl, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text
+                    val arcSignalText = app.get(arcSignalUrl, referer = episodeUrl, cookies = cookieJar, interceptor = webViewResolver).also { mergeCookies(cookieJar, it.cookies) }.text
                     val parsedScriptName = Regex("f=\"([A-Za-z0-9]+)\"").find(arcSignalText)?.groupValues?.getOrNull(1) ?: throw ErrorLoadingException("Missing daily JS variable route")
-                    app.get("$mainUrl/assets/js/$parsedScriptName.js", referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text
+                    app.get("$mainUrl/assets/js/$parsedScriptName.js", referer = episodeUrl, cookies = cookieJar, interceptor = webViewResolver).also { mergeCookies(cookieJar, it.cookies) }.text
                 }
             }
 
@@ -386,10 +387,10 @@ class Kuramanime : MainAPI() {
             val streamServerKey = envMap["MIX_STREAM_SERVER_KEY"] ?: throw ErrorLoadingException("Missing stream server key")
 
             runCatching {
-                app.post(keepAliveUrl, data = emptyMap(), headers = baseHeaders, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }
+                app.post(keepAliveUrl, data = emptyMap(), headers = baseHeaders, referer = episodeUrl, cookies = cookieJar, interceptor = webViewResolver).also { mergeCookies(cookieJar, it.cookies) }
             }
 
-            val pageNumber = app.get(checkEpisodeUrl, headers = baseHeaders, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text.trim().ifBlank { "1" }
+            val pageNumber = app.get(checkEpisodeUrl, headers = baseHeaders, referer = episodeUrl, cookies = cookieJar, interceptor = webViewResolver).also { mergeCookies(cookieJar, it.cookies) }.text.trim().ifBlank { "1" }
 
             val tokenHeaders = baseHeaders.toMutableMap().apply {
                 put("X-Fuck-ID", "$authKey:$authToken")
@@ -397,7 +398,7 @@ class Kuramanime : MainAPI() {
                 put("X-Request-Index", "0")
             }
 
-            val pageToken = app.get(buildAuthRoute(prefixAuth, authRoute), headers = tokenHeaders, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text.trim().ifBlank { throw ErrorLoadingException("Missing page token") }
+            val pageToken = app.get(buildAuthRoute(prefixAuth, authRoute), headers = tokenHeaders, referer = episodeUrl, cookies = cookieJar, interceptor = webViewResolver).also { mergeCookies(cookieJar, it.cookies) }.text.trim().ifBlank { throw ErrorLoadingException("Missing page token") }
             val resolvedPage = Regex("""\d+""").find(pageNumber)?.value ?: "1"
 
             serverOptions.forEach { server ->
@@ -415,7 +416,6 @@ class Kuramanime : MainAPI() {
                     append(resolvedPage)
                 }
 
-                // 4. Masukkan Authorization Bearer Token hasil API tadi
                 val secureHeaders = baseHeaders.toMutableMap().apply {
                     put("Origin", mainUrl)
                     put("X-Requested-With", "XMLHttpRequest")
@@ -424,12 +424,14 @@ class Kuramanime : MainAPI() {
                     }
                 }
 
+                // Terakhir, interceptor saat kita menarik iframe URL
                 val secureResponse = app.post(
                     secureUrl,
                     data = mapOf("authorization" to dynamicAuthToken),
                     headers = secureHeaders,
                     referer = episodeUrl,
                     cookies = cookieJar,
+                    interceptor = webViewResolver
                 ).also { mergeCookies(cookieJar, it.cookies) }
 
                 val secureDocument = runCatching { secureResponse.document }.getOrElse { Jsoup.parse(secureResponse.text, secureUrl) }
@@ -457,7 +459,7 @@ class Kuramanime : MainAPI() {
 
         if (nativeResolved) return true
 
-        val fallbackResponse = app.get(episodeUrl, referer = "$mainUrl/")
+        val fallbackResponse = app.get(episodeUrl, referer = "$mainUrl/", interceptor = webViewResolver)
         val fallbackDocument = runCatching { fallbackResponse.document }.getOrElse { Jsoup.parse(fallbackResponse.text, episodeUrl) }
         extractFromDocument(fallbackDocument)
         extractFromText(fallbackResponse.text)
@@ -514,7 +516,7 @@ class Kuramanime : MainAPI() {
         while (pendingPages.isNotEmpty() && visitedPages.size < 64) {
             val pageUrl = pendingPages.removeFirst()
             if (!visitedPages.add(pageUrl)) continue
-            val document = if (pageUrl == seriesUrl) firstDocument else app.get(pageUrl).document
+            val document = if (pageUrl == seriesUrl) firstDocument else app.get(pageUrl, interceptor = webViewResolver).document
             collectFromDocument(document)
         }
 
