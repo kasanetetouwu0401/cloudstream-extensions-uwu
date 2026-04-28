@@ -3,6 +3,7 @@ package com.kuramanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -315,155 +316,135 @@ class Kuramanime : MainAPI() {
                 Jsoup.parse(pageResponse.text, episodeUrl)
             }
 
-            // Ekstrak CSRF Token buat header request API
+            // Ekstrak CSRF Token
             val csrfToken = document.selectFirst("meta[name=csrf-token]")?.attr("content").orEmpty()
             val baseHeaders = mutableMapOf<String, String>().apply {
                 if (csrfToken.isNotBlank()) put("X-CSRF-TOKEN", csrfToken)
             }
 
-            val keepAliveUrl = document.selectFirst("#keepAliveTokenRoute")?.attr("value")
-                ?.ifBlank { null }
-                ?: "$mainUrl/misc/token/keep-alive"
-            val checkEpisodeUrl = document.selectFirst("#checkEp")?.attr("value")
-                ?.ifBlank { null }
-                ?: "${episodeUrl.trimEnd('/')}/check-episode"
-            
-            // Ambil path script rahasia leviathan.js
+            val keepAliveUrl = document.selectFirst("#keepAliveTokenRoute")?.attr("value")?.ifBlank { null } ?: "$mainUrl/misc/token/keep-alive"
+            val checkEpisodeUrl = document.selectFirst("#checkEp")?.attr("value")?.ifBlank { null } ?: "${episodeUrl.trimEnd('/')}/check-episode"
             val tokenAuthJsPath = document.selectFirst("#tokenAuthJs")?.attr("value")?.trim()?.ifBlank { null }
-            val routeScriptName = document.selectFirst("[data-kk]")?.attr("data-kk")?.trim()?.ifBlank { null }
             
-            val serverOptions = document.select("option[value]")
-                .mapNotNull { option ->
-                    val value = option.attr("value").trim().ifBlank { return@mapNotNull null }
-                    val label = option.text()
-                        .substringBefore("(")
-                        .replace("\\s+".toRegex(), " ")
-                        .trim()
-                        .ifBlank { value }
-                    ServerOption(value, label)
-                }
-                .distinctBy { it.value.lowercase() }
-                .ifEmpty {
-                    listOf(ServerOption("kuramadrive", "Kuramadrive"))
-                }
+            // Mengambil dinamis route attribute dari sizzlyb.js ala Miku!
+            val sizzlybUrl = document.selectFirst("script[src*=\"sizzlyb\"]")?.attr("abs:src")
+            var dynamicRouteAttr = "data-kk"
 
-            // Unduh file leviathan.js
+            if (!sizzlybUrl.isNullOrBlank()) {
+                val sizzlybText = app.get(
+                    sizzlybUrl,
+                    referer = episodeUrl,
+                    cookies = cookieJar
+                ).also { mergeCookies(cookieJar, it.cookies) }.text
+                
+                val attrMatch = Regex("""MIX_JS_ROUTE_PARAM_ATTR\s*:\s*["']([^"']+)["']""").find(sizzlybText)
+                if (attrMatch != null) {
+                    dynamicRouteAttr = attrMatch.groupValues[1]
+                }
+            }
+
+            val routeScriptName = document.selectFirst("[$dynamicRouteAttr]")?.attr(dynamicRouteAttr)?.trim()?.ifBlank { null }
+            
+            val serverOptions = document.select("option[value]").mapNotNull { option ->
+                val value = option.attr("value").trim().ifBlank { return@mapNotNull null }
+                val label = option.text().substringBefore("(").replace("\\s+".toRegex(), " ").trim().ifBlank { value }
+                ServerOption(value, label)
+            }.distinctBy { it.value.lowercase() }.ifEmpty { listOf(ServerOption("kuramadrive", "Kuramadrive")) }
+
             val leviathanJsText = if (!tokenAuthJsPath.isNullOrBlank()) {
                 val jsUrl = if (tokenAuthJsPath.startsWith("http")) tokenAuthJsPath else "$mainUrl${if (tokenAuthJsPath.startsWith("/")) "" else "/"}$tokenAuthJsPath"
-                app.get(
-                    jsUrl,
-                    referer = episodeUrl,
-                    cookies = cookieJar,
-                ).also { mergeCookies(cookieJar, it.cookies) }.text
+                app.get(jsUrl, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text
             } else ""
 
-            // Interceptor Rhino ala Miku untuk mendapatkan Bearer Token!
             var dynamicAuthToken = ""
             if (leviathanJsText.isNotBlank()) {
-                var cx: Context? = null
-                try {
-                    cx = Context.enter()
-                    // Miku atur optimizationLevel ke -1 agar aman di Android (Mode Interpretatif)
-                    cx.optimizationLevel = -1 
-                    val scope: Scriptable = cx.initStandardObjects()
-                    
-                    val jsCode = """
-                        var window = {};
-                        var extractedToken = "";
-                        var ${'$'} = {
-                            ajax: function(opt) {
+                runBlocking {
+                    var cx: Context? = null
+                    try {
+                        cx = Context.enter()
+                        cx.optimizationLevel = -1
+                        cx.languageVersion = Context.VERSION_ES6
+                        val scope: Scriptable = cx.initStandardObjects()
+                        
+                        val cleanJs = leviathanJsText
+                            .replace("async function", "function")
+                            .replace("await ", "")
+                        
+                        val jsCode = """
+                            var extractedToken = "";
+                            var window = { location: { href: '$mainUrl' } };
+                            var document = {
+                                getElementById: function(id) { return { value: 's1', getAttribute: function() { return ''; }, style: {} }; },
+                                createElement: function() { return { style: {} }; },
+                                querySelector: function() { return { getAttribute: function() { return ''; } }; }
+                            };
+                            var navigator = { userAgent: 'Mozilla/5.0' };
+                            
+                            var ${'$'} = function() { return ${'$'}; };
+                            ${'$'}.ajax = function(opt) {
                                 if (opt && opt.headers && opt.headers.Authorization) {
                                     extractedToken = opt.headers.Authorization;
                                 }
-                                return {};
+                                return { done: function(cb) { return { fail: function() {} }; } };
+                            };
+                            
+                            var fetch = function(url, opt) {
+                                if (opt && opt.headers && opt.headers.Authorization) {
+                                    extractedToken = opt.headers.Authorization;
+                                }
+                                return { then: function() { return { catch: function() {} }; } };
+                            };
+
+                            try {
+                                $cleanJs
+                            } catch(e) {}
+                            
+                            for (var prop in window) {
+                                if (typeof window[prop] === 'function') {
+                                    try {
+                                        window[prop]('url', 'POST', {}, 's1', 'html', null, '1');
+                                    } catch(e) {}
+                                }
                             }
-                        };
+                            
+                            extractedToken;
+                        """.trimIndent()
                         
-                        try {
-                            $leviathanJsText
-                        } catch(e) {}
-                        
-                        if (typeof window.kdrive_route === 'function') {
-                            try { window.kdrive_route(); } catch(e) {}
-                        }
-                        
-                        extractedToken;
-                    """.trimIndent()
-                    
-                    val result = cx.evaluateString(scope, jsCode, "MikuTokenStealer", 1, null)
-                    dynamicAuthToken = Context.toString(result).replace("Bearer ", "").trim()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                } finally {
-                    Context.exit()
+                        val result = cx.evaluateString(scope, jsCode, "MikuToken", 1, null)
+                        dynamicAuthToken = Context.toString(result).replace("Bearer ", "").trim()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    } finally {
+                        Context.exit()
+                    }
                 }
             }
 
             val jsEnv = when {
                 !routeScriptName.isNullOrBlank() -> {
-                    app.get(
-                        "$mainUrl/assets/js/$routeScriptName.js",
-                        referer = episodeUrl,
-                        cookies = cookieJar,
-                    ).also { mergeCookies(cookieJar, it.cookies) }.text
+                    app.get("$mainUrl/assets/js/$routeScriptName.js", referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text
                 }
                 else -> {
-                    val arcSignalUrl = document.select("script[src]")
-                        .firstOrNull { it.attr("src").contains("arc-signal", true) }
-                        ?.attr("abs:src")
-                        ?.ifBlank { null }
-                        ?: throw ErrorLoadingException("Missing arc-signal JS")
-                    val arcSignalText = app.get(
-                        arcSignalUrl,
-                        referer = episodeUrl,
-                        cookies = cookieJar,
-                    ).also { mergeCookies(cookieJar, it.cookies) }.text
-                    val parsedScriptName = Regex("f=\"([A-Za-z0-9]+)\"")
-                        .find(arcSignalText)
-                        ?.groupValues
-                        ?.getOrNull(1)
-                        ?: throw ErrorLoadingException("Missing daily JS variable route")
-                    app.get(
-                        "$mainUrl/assets/js/$parsedScriptName.js",
-                        referer = episodeUrl,
-                        cookies = cookieJar,
-                    ).also { mergeCookies(cookieJar, it.cookies) }.text
+                    val arcSignalUrl = document.select("script[src]").firstOrNull { it.attr("src").contains("arc-signal", true) }?.attr("abs:src")?.ifBlank { null } ?: throw ErrorLoadingException("Missing arc-signal JS")
+                    val arcSignalText = app.get(arcSignalUrl, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text
+                    val parsedScriptName = Regex("f=\"([A-Za-z0-9]+)\"").find(arcSignalText)?.groupValues?.getOrNull(1) ?: throw ErrorLoadingException("Missing daily JS variable route")
+                    app.get("$mainUrl/assets/js/$parsedScriptName.js", referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text
                 }
             }
 
             val envMap = parseJsEnv(jsEnv)
-            val prefixAuth = envMap["MIX_PREFIX_AUTH_ROUTE_PARAM"]
-                ?: throw ErrorLoadingException("Missing auth prefix")
-            val authRoute = envMap["MIX_AUTH_ROUTE_PARAM"]
-                ?: throw ErrorLoadingException("Missing auth route")
-            val authKey = envMap["MIX_AUTH_KEY"]
-                ?: throw ErrorLoadingException("Missing auth key")
-            val authToken = envMap["MIX_AUTH_TOKEN"]
-                ?: throw ErrorLoadingException("Missing auth token")
-            val pageTokenKey = envMap["MIX_PAGE_TOKEN_KEY"]
-                ?: throw ErrorLoadingException("Missing page token key")
-            val streamServerKey = envMap["MIX_STREAM_SERVER_KEY"]
-                ?: throw ErrorLoadingException("Missing stream server key")
+            val prefixAuth = envMap["MIX_PREFIX_AUTH_ROUTE_PARAM"] ?: throw ErrorLoadingException("Missing auth prefix")
+            val authRoute = envMap["MIX_AUTH_ROUTE_PARAM"] ?: throw ErrorLoadingException("Missing auth route")
+            val authKey = envMap["MIX_AUTH_KEY"] ?: throw ErrorLoadingException("Missing auth key")
+            val authToken = envMap["MIX_AUTH_TOKEN"] ?: throw ErrorLoadingException("Missing auth token")
+            val pageTokenKey = envMap["MIX_PAGE_TOKEN_KEY"] ?: throw ErrorLoadingException("Missing page token key")
+            val streamServerKey = envMap["MIX_STREAM_SERVER_KEY"] ?: throw ErrorLoadingException("Missing stream server key")
 
             runCatching {
-                app.post(
-                    keepAliveUrl,
-                    data = emptyMap(),
-                    headers = baseHeaders,
-                    referer = episodeUrl,
-                    cookies = cookieJar,
-                ).also { mergeCookies(cookieJar, it.cookies) }
+                app.post(keepAliveUrl, data = emptyMap(), headers = baseHeaders, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }
             }
 
-            val pageNumber = app.get(
-                checkEpisodeUrl,
-                headers = baseHeaders,
-                referer = episodeUrl,
-                cookies = cookieJar,
-            ).also { mergeCookies(cookieJar, it.cookies) }
-                .text
-                .trim()
-                .ifBlank { "1" }
+            val pageNumber = app.get(checkEpisodeUrl, headers = baseHeaders, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text.trim().ifBlank { "1" }
 
             val tokenHeaders = baseHeaders.toMutableMap().apply {
                 put("X-Fuck-ID", "$authKey:$authToken")
@@ -471,16 +452,7 @@ class Kuramanime : MainAPI() {
                 put("X-Request-Index", "0")
             }
 
-            val pageToken = app.get(
-                buildAuthRoute(prefixAuth, authRoute),
-                headers = tokenHeaders,
-                referer = episodeUrl,
-                cookies = cookieJar,
-            ).also { mergeCookies(cookieJar, it.cookies) }
-                .text
-                .trim()
-                .ifBlank { throw ErrorLoadingException("Missing page token") }
-
+            val pageToken = app.get(buildAuthRoute(prefixAuth, authRoute), headers = tokenHeaders, referer = episodeUrl, cookies = cookieJar).also { mergeCookies(cookieJar, it.cookies) }.text.trim().ifBlank { throw ErrorLoadingException("Missing page token") }
             val resolvedPage = Regex("""\d+""").find(pageNumber)?.value ?: "1"
 
             serverOptions.forEach { server ->
@@ -498,7 +470,6 @@ class Kuramanime : MainAPI() {
                     append(resolvedPage)
                 }
 
-                // Masukkan Dynamic Token curian kita ke header Authorization!
                 val secureHeaders = baseHeaders.toMutableMap().apply {
                     put("Origin", mainUrl)
                     put("X-Requested-With", "XMLHttpRequest")
@@ -518,8 +489,11 @@ class Kuramanime : MainAPI() {
                 val secureDocument = runCatching { secureResponse.document }.getOrElse {
                     Jsoup.parse(secureResponse.text, secureUrl)
                 }
-                val iframeUrl = secureDocument.selectFirst("iframe[src]")?.attr("abs:src")
-                    ?.ifBlank { null }
+                
+                var iframeUrl = secureDocument.selectFirst("iframe[src]")?.attr("abs:src")?.ifBlank { null }
+                if (iframeUrl == null) {
+                    iframeUrl = Regex("""iframe.*?src=["'\\]+([^"'\\]+)""").find(secureResponse.text)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+                }
 
                 if (!iframeUrl.isNullOrBlank()) {
                     KuramanimeExtractors.loadKnownExtractor(
@@ -551,10 +525,7 @@ class Kuramanime : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val href = selectFirst("h5 a")?.attr("href")
-            ?.let(::fixUrl)
-            ?.let(::normalizeAnimeUrl)
-            ?: return null
+        val href = selectFirst("h5 a")?.attr("href")?.let(::fixUrl)?.let(::normalizeAnimeUrl) ?: return null
         val title = selectFirst("h5 a")?.text()?.trim()?.ifBlank { null } ?: return null
         val poster = selectFirst("div.product__item__pic")?.attr("data-setbg")?.let(::fixUrlNull)
         val typeLabel = select("div.product__item__text ul li").firstOrNull()?.text()?.trim()
@@ -577,11 +548,7 @@ class Kuramanime : MainAPI() {
 
         fun addEpisodeAnchor(anchor: Element) {
             val href = fixUrl(anchor.attr("href"))
-            val episode = Regex("Ep\\s*(\\d+)", RegexOption.IGNORE_CASE)
-                .find(anchor.text())
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.toIntOrNull()
+            val episode = Regex("Ep\\s*(\\d+)", RegexOption.IGNORE_CASE).find(anchor.text())?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?: Regex("/episode/(\\d+)").find(href)?.groupValues?.getOrNull(1)?.toIntOrNull()
             if (!episodeLinks.containsKey(href)) {
                 episodeLinks[href] = anchor.text().trim() to episode
