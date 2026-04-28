@@ -21,7 +21,7 @@ cloudstream {
         "Movie",
     )
 
-    requiresResources = true
+    
     language = "en"
 
     iconUrl = "https://www.google.com/s2/favicons?domain=dramafull.cc&sz=%size%"
