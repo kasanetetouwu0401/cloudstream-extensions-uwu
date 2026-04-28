@@ -573,7 +573,7 @@ val separator = if (request.data.contains("?")) "&" else "?"
     }
 
     private companion object {
-        const val SECURE_AUTHORIZATION = "0H28vToEZdS1XVYSNhMXKifVXk4m6nyoXBFysA4sUmX"
+        const val SECURE_AUTHORIZATION = "0TrVdRnMpWH4TYFLOkCxRbodElWdzjCRWR2uyiJC"
     }
 
     private data class ServerOption(
