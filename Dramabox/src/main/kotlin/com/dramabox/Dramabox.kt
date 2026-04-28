@@ -13,8 +13,8 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 
 class Dramabox : MainAPI() {
-    override var mainUrl = buildMainUrl()
-    private val apiUrl = buildApiUrl()
+    override var mainUrl = "https://www.dramabox.com/in"
+    private val apiUrl = "https://db.hafizhibnusyam.my.id"
     override var name = "DramaBox🐣"
     override var lang = "id"
     override val hasMainPage = true
@@ -256,28 +256,6 @@ val safePage = if (page < 1) 1 else page
     }
 
     private fun LoadData.toJsonData(): String = this.toJson()
-
-    private fun buildMainUrl(): String {
-        val codes = intArrayOf(
-            104, 116, 116, 112, 115, 58, 47, 47,
-            119, 119, 119, 46, 100, 114, 97, 109, 97, 98, 111, 120, 46, 99, 111, 109,
-            47, 105, 110
-        )
-        val sb = StringBuilder()
-        for (code in codes) sb.append(code.toChar())
-        return sb.toString()
-    }
-
-    private fun buildApiUrl(): String {
-        val codes = intArrayOf(
-            104, 116, 116, 112, 115, 58, 47, 47,
-            100, 98, 46, 104, 97, 102, 105, 122, 104, 105, 98, 110, 117, 115, 121, 97, 109,
-            46, 109, 121, 46, 105, 100
-        )
-        val sb = StringBuilder()
-        for (code in codes) sb.append(code.toChar())
-        return sb.toString()
-    }
 
     data class DramaListResponse(
         @JsonProperty("data") val data: List<DramaItem>? = null,
