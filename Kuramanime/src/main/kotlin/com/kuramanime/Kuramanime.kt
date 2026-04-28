@@ -3,6 +3,7 @@ package com.kuramanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.*
+import com.whl.quickjs.wrapper.QuickJSContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -10,7 +11,7 @@ import kotlin.random.Random
 
 class Kuramanime : MainAPI() {
     override var mainUrl = "https://v17.kuramanime.ink"
-    override var name = "Kuramanime🦊"
+    override var name = "Kuramanime"
     override var lang = "id"
     override val hasMainPage = true
     override val hasDownloadSupport = true
@@ -38,7 +39,7 @@ class Kuramanime : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-val separator = if (request.data.contains("?")) "&" else "?"
+        val separator = if (request.data.contains("?")) "&" else "?"
         val document = app.get("$mainUrl/${request.data}$separator&page=$page").document
         val home = document.select("div.product__item").mapNotNull { card ->
             card.toSearchResult()
@@ -313,15 +314,21 @@ val separator = if (request.data.contains("?")) "&" else "?"
                 Jsoup.parse(pageResponse.text, episodeUrl)
             }
 
+            val csrfToken = document.selectFirst("meta[name=csrf-token]")?.attr("content").orEmpty()
+            val baseHeaders = mutableMapOf<String, String>().apply {
+                if (csrfToken.isNotBlank()) put("X-CSRF-TOKEN", csrfToken)
+            }
+
             val keepAliveUrl = document.selectFirst("#keepAliveTokenRoute")?.attr("value")
                 ?.ifBlank { null }
                 ?: "$mainUrl/misc/token/keep-alive"
             val checkEpisodeUrl = document.selectFirst("#checkEp")?.attr("value")
                 ?.ifBlank { null }
                 ?: "${episodeUrl.trimEnd('/')}/check-episode"
-            val routeScriptName = document.selectFirst("[data-kk]")?.attr("data-kk")
-                ?.trim()
-                ?.ifBlank { null }
+            
+            val tokenAuthJsPath = document.selectFirst("#tokenAuthJs")?.attr("value")?.trim()?.ifBlank { null }
+            val routeScriptName = document.selectFirst("[data-kk]")?.attr("data-kk")?.trim()?.ifBlank { null }
+            
             val serverOptions = document.select("option[value]")
                 .mapNotNull { option ->
                     val value = option.attr("value").trim().ifBlank { return@mapNotNull null }
@@ -336,6 +343,45 @@ val separator = if (request.data.contains("?")) "&" else "?"
                 .ifEmpty {
                     listOf(ServerOption("kuramadrive", "Kuramadrive"))
                 }
+
+            val leviathanJsText = if (!tokenAuthJsPath.isNullOrBlank()) {
+                val jsUrl = if (tokenAuthJsPath.startsWith("http")) tokenAuthJsPath else "$mainUrl${if (tokenAuthJsPath.startsWith("/")) "" else "/"}$tokenAuthJsPath"
+                app.get(
+                    jsUrl,
+                    referer = episodeUrl,
+                    cookies = cookieJar,
+                ).also { mergeCookies(cookieJar, it.cookies) }.text
+            } else ""
+
+            var dynamicAuthToken = ""
+            if (leviathanJsText.isNotBlank()) {
+                dynamicAuthToken = runCatching {
+                    QuickJSContext.create().use { ctx ->
+                        ctx.evaluate("""
+                            var window = {};
+                            var extractedToken = "";
+                            var ${'$'} = {
+                                ajax: function(opt) {
+                                    if (opt && opt.headers && opt.headers.Authorization) {
+                                        extractedToken = opt.headers.Authorization;
+                                    }
+                                    return {};
+                                }
+                            };
+                            
+                            try {
+                                $leviathanJsText
+                            } catch(e) {}
+                            
+                            if (typeof window.kdrive_route === 'function') {
+                                try { window.kdrive_route(); } catch(e) {}
+                            }
+                            
+                            extractedToken;
+                        """.trimIndent()) as? String
+                    }?.replace("Bearer ", "")?.trim() ?: ""
+                }.getOrDefault("")
+            }
 
             val jsEnv = when {
                 !routeScriptName.isNullOrBlank() -> {
@@ -387,6 +433,7 @@ val separator = if (request.data.contains("?")) "&" else "?"
                 app.post(
                     keepAliveUrl,
                     data = emptyMap(),
+                    headers = baseHeaders,
                     referer = episodeUrl,
                     cookies = cookieJar,
                 ).also { mergeCookies(cookieJar, it.cookies) }
@@ -394,6 +441,7 @@ val separator = if (request.data.contains("?")) "&" else "?"
 
             val pageNumber = app.get(
                 checkEpisodeUrl,
+                headers = baseHeaders,
                 referer = episodeUrl,
                 cookies = cookieJar,
             ).also { mergeCookies(cookieJar, it.cookies) }
@@ -401,13 +449,15 @@ val separator = if (request.data.contains("?")) "&" else "?"
                 .trim()
                 .ifBlank { "1" }
 
+            val tokenHeaders = baseHeaders.toMutableMap().apply {
+                put("X-Fuck-ID", "$authKey:$authToken")
+                put("X-Request-ID", randomRequestId())
+                put("X-Request-Index", "0")
+            }
+
             val pageToken = app.get(
                 buildAuthRoute(prefixAuth, authRoute),
-                headers = mapOf(
-                    "X-Fuck-ID" to "$authKey:$authToken",
-                    "X-Request-ID" to randomRequestId(),
-                    "X-Request-Index" to "0",
-                ),
+                headers = tokenHeaders,
                 referer = episodeUrl,
                 cookies = cookieJar,
             ).also { mergeCookies(cookieJar, it.cookies) }
@@ -432,13 +482,18 @@ val separator = if (request.data.contains("?")) "&" else "?"
                     append(resolvedPage)
                 }
 
+                val secureHeaders = baseHeaders.toMutableMap().apply {
+                    put("Origin", mainUrl)
+                    put("X-Requested-With", "XMLHttpRequest")
+                    if (dynamicAuthToken.isNotBlank()) {
+                        put("Authorization", "Bearer $dynamicAuthToken")
+                    }
+                }
+
                 val secureResponse = app.post(
                     secureUrl,
-                    data = mapOf("authorization" to SECURE_AUTHORIZATION),
-                    headers = mapOf(
-                        "Origin" to mainUrl,
-                        "X-Requested-With" to "XMLHttpRequest",
-                    ),
+                    data = mapOf("authorization" to dynamicAuthToken),
+                    headers = secureHeaders,
                     referer = episodeUrl,
                     cookies = cookieJar,
                 ).also { mergeCookies(cookieJar, it.cookies) }
@@ -570,10 +625,6 @@ val separator = if (request.data.contains("?")) "&" else "?"
             typeLabel.contains("ova", true) || typeLabel.contains("special", true) -> TvType.OVA
             else -> TvType.Anime
         }
-    }
-
-    private companion object {
-        const val SECURE_AUTHORIZATION = "0TrVdRnMpWH4TYFLOkCxRbodElWdzjCRWR2uyiJC"
     }
 
     private data class ServerOption(
