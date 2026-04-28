@@ -3,13 +3,14 @@ package com.kuramanime
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.network.CloudflareInterceptor
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.network.WebViewResolver
 import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import kotlin.random.Random
+import okhttp3.Interceptor
 
 class Kuramanime : MainAPI() {
     override var mainUrl = "https://v17.kuramanime.ink"
@@ -20,7 +21,7 @@ class Kuramanime : MainAPI() {
 
     // Senjata rahasia Miku untuk menembus Cloudflare dan WAF! 
     override val interceptors = listOf(
-        CloudflareInterceptor(),
+        CloudflareKiller(),
         WebViewResolver(Regex("""kuramanime\.ink"""))
     )
 
