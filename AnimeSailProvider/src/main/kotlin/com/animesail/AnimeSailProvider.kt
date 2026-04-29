@@ -20,6 +20,7 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import java.net.URLEncoder
 
 class AnimeSailProvider : MainAPI() {
     override var mainUrl = "https://154.26.137.28"
@@ -131,6 +132,26 @@ class AnimeSailProvider : MainAPI() {
         }
     }
 
+    private suspend fun searchTmdbId(
+        query: String,
+        type: TvType,
+        apiKey: String
+    ): Int? {
+        val searchType = if (type == TvType.AnimeMovie) "movie" else "tv"
+        val url = "https://api.themoviedb.org/3/search/$searchType?api_key=$apiKey&query=${URLEncoder.encode(query, "UTF-8")}"
+        
+        return try {
+            val response = app.get(url).text
+            val json = JSONObject(response)
+            val results = json.optJSONArray("results")
+            if (results != null && results.length() > 0) {
+                results.getJSONObject(0).optInt("id")
+            } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     override suspend fun load(url: String): LoadResponse {
         val document = request(url).document
 
@@ -147,17 +168,25 @@ class AnimeSailProvider : MainAPI() {
         val tracker = APIHolder.getTracker(listOf(title), TrackerType.getTypes(type), year, true)
         val malId = tracker?.malId
 
-        var animeMetaData: MetaAnimeData? = null
+        var malSyncData: MalSyncResponse? = null
         var tmdbid: Int? = null
         var kitsuid: String? = null
 
         if (malId != null) {
             try {
-                val syncMetaData = app.get("https://api.ani.zip/mappings?mal_id=$malId").text
-                animeMetaData = parseAnimeData(syncMetaData)
-                tmdbid = animeMetaData?.mappings?.themoviedbId
-                kitsuid = animeMetaData?.mappings?.kitsuId
+                // Fetch data dari MAL-Sync Cache di GitHub
+                val syncUrl = "https://raw.githubusercontent.com/MAL-Sync/Cache/master/data/myanimelist/anime/$malId.json"
+                val responseText = app.get(syncUrl).text
+                malSyncData = mapper.readValue(responseText, MalSyncResponse::class.java)
+
+                // Ambil Kitsu ID dari external mappings
+                kitsuid = malSyncData?.external?.find { it.site?.equals("Kitsu", true) == true }?.id
+
+                // Fallback pencarian TMDB ID menggunakan judul dari MAL-Sync atau web
+                val searchTitle = malSyncData?.title ?: title
+                tmdbid = searchTmdbId(searchTitle, type, "98ae14df2b8d8f8f8136499daf79f0e0")
             } catch (e: Exception) {
+                // Abaikan kalau gagal hit, data fallback dari web tetap jalan
             }
         }
 
@@ -169,7 +198,7 @@ class AnimeSailProvider : MainAPI() {
             appLangCode = "en"
         )
 
-        val backgroundposter = animeMetaData?.images?.find { it.coverType == "Fanart" }?.url ?: tracker?.cover
+        val backgroundposter = tracker?.cover ?: malSyncData?.image ?: poster
 
         val episodes = document.select("ul.daftar > li").amap {
             val link = fixUrl(it.select("a").attr("href"))
@@ -181,52 +210,28 @@ class AnimeSailProvider : MainAPI() {
                 episodeNum = 1
             }
 
-            val episodeKey = episodeNum?.toString()
-            val metaEp = if (episodeKey != null) animeMetaData?.episodes?.get(episodeKey) else null
-
-            val epOverview = metaEp?.overview
-            val finalOverview = if (!epOverview.isNullOrBlank()) {
-                epOverview
-            } else {
-                "Synopsis not yet available."
-            }
-
             newEpisode(link) {
                 this.name = if (type == TvType.AnimeMovie) {
-                    animeMetaData?.titles?.get("en") ?: animeMetaData?.titles?.get("ja") ?: title
+                    malSyncData?.title ?: title
                 } else {
-                    metaEp?.title?.get("en") ?: metaEp?.title?.get("ja") ?: name
+                    name
                 }
-
                 this.episode = episodeNum
-                this.score = Score.from10(metaEp?.rating)
-                this.posterUrl = metaEp?.image ?: animeMetaData?.images?.firstOrNull()?.url ?: ""
-                this.description = finalOverview
-                this.addDate(metaEp?.airDateUtc)
-                this.runTime = metaEp?.runtime
+                this.description = plotText ?: "Synopsis not yet available."
             }
         }.reversed()
 
-        val apiDescription = animeMetaData?.description?.replace(Regex("<.*?>"), "")
-        val rawPlot = apiDescription ?: animeMetaData?.episodes?.get("1")?.overview
-
-        val finalPlot = if (!rawPlot.isNullOrBlank()) {
-            rawPlot
-        } else {
-            plotText
-        }
-
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            this.engName = animeMetaData?.titles?.get("en") ?: title
-            this.japName = animeMetaData?.titles?.get("ja") ?: animeMetaData?.titles?.get("x-jat")
-            this.posterUrl = tracker?.image ?: poster
+            this.engName = malSyncData?.title ?: title
+            this.japName = title
+            this.posterUrl = tracker?.image ?: malSyncData?.image ?: poster
             this.backgroundPosterUrl = backgroundposter
             try { this.logoUrl = logoUrl } catch (_: Throwable) {}
             this.year = year
             this.duration = getDurationFromString(durationText)
             addEpisodes(DubStatus.Subbed, episodes)
             this.showStatus = getStatus(statusText)
-            this.plot = finalPlot
+            this.plot = plotText
             this.tags = tagsList
             addMalId(malId)
             addAniListId(tracker?.aniId?.toIntOrNull())
@@ -379,46 +384,20 @@ class AnimeSailProvider : MainAPI() {
             ?: Qualities.Unknown.value
     }
 
+    // --- Data Classes MAL-Sync ---
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MetaImage(
-        @JsonProperty("coverType") val coverType: String?,
-        @JsonProperty("url") val url: String?
-    )
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MetaEpisode(
-        @JsonProperty("episode") val episode: String?,
-        @JsonProperty("airDateUtc") val airDateUtc: String?,
-        @JsonProperty("runtime") val runtime: Int?,
+    data class MalSyncResponse(
+        @JsonProperty("id") val malId: Int?,
+        @JsonProperty("title") val title: String?,
         @JsonProperty("image") val image: String?,
-        @JsonProperty("title") val title: Map<String, String>?,
-        @JsonProperty("overview") val overview: String?,
-        @JsonProperty("rating") val rating: String?,
-        @JsonProperty("finaleType") val finaleType: String?
+        @JsonProperty("external") val external: List<ExternalMapping>? = emptyList()
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MetaAnimeData(
-        @JsonProperty("titles") val titles: Map<String, String>?,
-        @JsonProperty("description") val description: String?,
-        @JsonProperty("images") val images: List<MetaImage>?,
-        @JsonProperty("episodes") val episodes: Map<String, MetaEpisode>?,
-        @JsonProperty("mappings") val mappings: MetaMappings? = null
+    data class ExternalMapping(
+        @JsonProperty("site") val site: String?,
+        @JsonProperty("id") val id: String?
     )
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MetaMappings(
-        @JsonProperty("themoviedb_id") val themoviedbId: Int? = null,
-        @JsonProperty("kitsu_id") val kitsuId: String? = null
-    )
-
-    private fun parseAnimeData(jsonString: String): MetaAnimeData? {
-        return try {
-            mapper.readValue(jsonString, MetaAnimeData::class.java)
-        } catch (_: Exception) {
-            null
-        }
-    }
 }
 
 suspend fun fetchTmdbLogoUrl(
