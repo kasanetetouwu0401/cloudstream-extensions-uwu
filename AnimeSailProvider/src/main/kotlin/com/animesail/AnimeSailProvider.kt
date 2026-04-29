@@ -20,7 +20,6 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-import java.net.URLEncoder
 
 class AnimeSailProvider : MainAPI() {
     override var mainUrl = "https://154.26.137.28"
@@ -132,26 +131,6 @@ class AnimeSailProvider : MainAPI() {
         }
     }
 
-    private suspend fun searchTmdbId(
-        query: String,
-        type: TvType,
-        apiKey: String
-    ): Int? {
-        val searchType = if (type == TvType.AnimeMovie) "movie" else "tv"
-        val url = "https://api.themoviedb.org/3/search/$searchType?api_key=$apiKey&query=${URLEncoder.encode(query, "UTF-8")}"
-        
-        return try {
-            val response = app.get(url).text
-            val json = JSONObject(response)
-            val results = json.optJSONArray("results")
-            if (results != null && results.length() > 0) {
-                results.getJSONObject(0).optInt("id")
-            } else null
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     override suspend fun load(url: String): LoadResponse {
         val document = request(url).document
 
@@ -168,20 +147,16 @@ class AnimeSailProvider : MainAPI() {
         val tracker = APIHolder.getTracker(listOf(title), TrackerType.getTypes(type), year, true)
         val malId = tracker?.malId
 
-        var jikanData: JikanAnimeData? = null
-        var jikanEpisodes: List<JikanEpisode>? = null
+        var animeMetaData: MetaAnimeData? = null
         var tmdbid: Int? = null
+        var kitsuid: String? = null
 
         if (malId != null) {
             try {
-                val fullRes = app.get("https://api.jikan.moe/v4/anime/$malId/full").text
-                jikanData = mapper.readValue(fullRes, JikanFullResponse::class.java)?.data
-
-                val epRes = app.get("https://api.jikan.moe/v4/anime/$malId/episodes").text
-                jikanEpisodes = mapper.readValue(epRes, JikanEpisodesResponse::class.java)?.data
-
-                val searchTitle = jikanData?.titleEnglish ?: jikanData?.title ?: title
-                tmdbid = searchTmdbId(searchTitle, type, "98ae14df2b8d8f8f8136499daf79f0e0")
+                val syncMetaData = app.get("https://api.ani.zip/mappings?mal_id=$malId").text
+                animeMetaData = parseAnimeData(syncMetaData)
+                tmdbid = animeMetaData?.mappings?.themoviedbId
+                kitsuid = animeMetaData?.mappings?.kitsuId
             } catch (e: Exception) {
             }
         }
@@ -194,7 +169,7 @@ class AnimeSailProvider : MainAPI() {
             appLangCode = "en"
         )
 
-        val backgroundposter = tracker?.cover ?: jikanData?.images?.jpg?.largeImageUrl ?: poster
+        val backgroundposter = animeMetaData?.images?.find { it.coverType == "Fanart" }?.url ?: tracker?.cover
 
         val episodes = document.select("ul.daftar > li").amap {
             val link = fixUrl(it.select("a").attr("href"))
@@ -206,28 +181,45 @@ class AnimeSailProvider : MainAPI() {
                 episodeNum = 1
             }
 
-            val metaEp = jikanEpisodes?.find { ep -> ep.malId == episodeNum }
+            val episodeKey = episodeNum?.toString()
+            val metaEp = if (episodeKey != null) animeMetaData?.episodes?.get(episodeKey) else null
+
+            val epOverview = metaEp?.overview
+            val finalOverview = if (!epOverview.isNullOrBlank()) {
+                epOverview
+            } else {
+                "Synopsis not yet available."
+            }
 
             newEpisode(link) {
                 this.name = if (type == TvType.AnimeMovie) {
-                    jikanData?.titleEnglish ?: jikanData?.titleJapanese ?: title
+                    animeMetaData?.titles?.get("en") ?: animeMetaData?.titles?.get("ja") ?: title
                 } else {
-                    metaEp?.title ?: name
+                    metaEp?.title?.get("en") ?: metaEp?.title?.get("ja") ?: name
                 }
 
                 this.episode = episodeNum
-                this.score = metaEp?.score?.let { s -> Score.from10(s.toString()) }
-                this.posterUrl = jikanData?.images?.jpg?.imageUrl ?: ""
-                this.description = jikanData?.synopsis ?: plotText ?: "Synopsis not yet available."
+                this.score = Score.from10(metaEp?.rating)
+                this.posterUrl = metaEp?.image ?: animeMetaData?.images?.firstOrNull()?.url ?: ""
+                this.description = finalOverview
+                this.addDate(metaEp?.airDateUtc)
+                this.runTime = metaEp?.runtime
             }
         }.reversed()
 
-        val finalPlot = jikanData?.synopsis ?: plotText
+        val apiDescription = animeMetaData?.description?.replace(Regex("<.*?>"), "")
+        val rawPlot = apiDescription ?: animeMetaData?.episodes?.get("1")?.overview
+
+        val finalPlot = if (!rawPlot.isNullOrBlank()) {
+            rawPlot
+        } else {
+            plotText
+        }
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            this.engName = jikanData?.titleEnglish ?: title
-            this.japName = jikanData?.titleJapanese ?: title
-            this.posterUrl = tracker?.image ?: poster ?: jikanData?.images?.jpg?.largeImageUrl
+            this.engName = animeMetaData?.titles?.get("en") ?: title
+            this.japName = animeMetaData?.titles?.get("ja") ?: animeMetaData?.titles?.get("x-jat")
+            this.posterUrl = tracker?.image ?: poster
             this.backgroundPosterUrl = backgroundposter
             try { this.logoUrl = logoUrl } catch (_: Throwable) {}
             this.year = year
@@ -238,6 +230,7 @@ class AnimeSailProvider : MainAPI() {
             this.tags = tagsList
             addMalId(malId)
             addAniListId(tracker?.aniId?.toIntOrNull())
+            try { addKitsuId(kitsuid) } catch (_: Throwable) {}
         }
     }
 
@@ -387,41 +380,45 @@ class AnimeSailProvider : MainAPI() {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class JikanFullResponse(
-        @JsonProperty("data") val data: JikanAnimeData?
+    data class MetaImage(
+        @JsonProperty("coverType") val coverType: String?,
+        @JsonProperty("url") val url: String?
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class JikanAnimeData(
-        @JsonProperty("title") val title: String?,
-        @JsonProperty("title_english") val titleEnglish: String?,
-        @JsonProperty("title_japanese") val titleJapanese: String?,
-        @JsonProperty("synopsis") val synopsis: String?,
-        @JsonProperty("images") val images: JikanImages?
+    data class MetaEpisode(
+        @JsonProperty("episode") val episode: String?,
+        @JsonProperty("airDateUtc") val airDateUtc: String?,
+        @JsonProperty("runtime") val runtime: Int?,
+        @JsonProperty("image") val image: String?,
+        @JsonProperty("title") val title: Map<String, String>?,
+        @JsonProperty("overview") val overview: String?,
+        @JsonProperty("rating") val rating: String?,
+        @JsonProperty("finaleType") val finaleType: String?
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class JikanImages(
-        @JsonProperty("jpg") val jpg: JikanJpg?
+    data class MetaAnimeData(
+        @JsonProperty("titles") val titles: Map<String, String>?,
+        @JsonProperty("description") val description: String?,
+        @JsonProperty("images") val images: List<MetaImage>?,
+        @JsonProperty("episodes") val episodes: Map<String, MetaEpisode>?,
+        @JsonProperty("mappings") val mappings: MetaMappings? = null
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class JikanJpg(
-        @JsonProperty("large_image_url") val largeImageUrl: String?,
-        @JsonProperty("image_url") val imageUrl: String?
+    data class MetaMappings(
+        @JsonProperty("themoviedb_id") val themoviedbId: Int? = null,
+        @JsonProperty("kitsu_id") val kitsuId: String? = null
     )
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class JikanEpisodesResponse(
-        @JsonProperty("data") val data: List<JikanEpisode>?
-    )
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class JikanEpisode(
-        @JsonProperty("mal_id") val malId: Int?,
-        @JsonProperty("title") val title: String?,
-        @JsonProperty("score") val score: Double?
-    )
+    private fun parseAnimeData(jsonString: String): MetaAnimeData? {
+        return try {
+            mapper.readValue(jsonString, MetaAnimeData::class.java)
+        } catch (_: Exception) {
+            null
+        }
+    }
 }
 
 suspend fun fetchTmdbLogoUrl(
