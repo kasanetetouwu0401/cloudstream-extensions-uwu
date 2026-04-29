@@ -43,9 +43,9 @@ class OploverzProvider : MainAPI() {
     }
 
     override val mainPage = mainPageOf(
-        "latest" to "Rilis Terbaru",
-        "Sedang Trending" to "Sedang Trending",
-        "Tayangan Baru Ditambahkan" to "Tayangan Baru Ditambahkan"
+        "latest" to "Latest Release",
+        "Sedang Trending" to "Trending",
+        "Tayangan Baru Ditambahkan" to "New Shows Added"
     )
 
     override suspend fun getMainPage(

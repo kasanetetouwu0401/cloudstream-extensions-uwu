@@ -1,10 +1,10 @@
 // use an integer for version numbers
-version = 31
+version = 1
 
 cloudstream {
     language = "id"
-
-    authors = listOf("Duro92", "CodeSanzz")
+    description = "Oploverz — Streaming Anime Subtitle Indonesia"
+    authors = listOf("Miku")
 
     /**
      * Status int as the following:
