@@ -56,7 +56,7 @@ class OploverzProvider : MainAPI() {
         var hasNextPage = false
 
         if (request.data == "latest") {
-            val response = app.get("$backAPI/api/episodes?page=$page&pageSize=24&sort=${request.data}", referer = "$mainUrl/")
+            val response = app.get("$backAPI/api/episodes?page=$page&pageSize=100&sort=${request.data}", referer = "$mainUrl/")
                 .parsedSafe<Anime>()
             
             response?.data?.forEach { item ->
