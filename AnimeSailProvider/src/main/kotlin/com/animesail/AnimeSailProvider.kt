@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
+import com.lagradost.cloudstream3.LoadResponse.Companion.addKitsuId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.mvvm.safeApiCall
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -19,7 +20,6 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
-import java.net.URLEncoder
 
 class AnimeSailProvider : MainAPI() {
     override var mainUrl = "https://154.26.137.28"
@@ -131,26 +131,6 @@ class AnimeSailProvider : MainAPI() {
         }
     }
 
-    private suspend fun searchTmdbId(
-        query: String,
-        type: TvType,
-        apiKey: String
-    ): Int? {
-        val searchType = if (type == TvType.AnimeMovie) "movie" else "tv"
-        val url = "https://api.themoviedb.org/3/search/$searchType?api_key=$apiKey&query=${URLEncoder.encode(query, "UTF-8")}"
-        
-        return try {
-            val response = app.get(url).text
-            val json = JSONObject(response)
-            val results = json.optJSONArray("results")
-            if (results != null && results.length() > 0) {
-                results.getJSONObject(0).optInt("id")
-            } else null
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     override suspend fun load(url: String): LoadResponse {
         val document = request(url).document
 
@@ -166,42 +146,25 @@ class AnimeSailProvider : MainAPI() {
 
         val tracker = APIHolder.getTracker(listOf(title), TrackerType.getTypes(type), year, true)
         val malId = tracker?.malId
+        val aniId = tracker?.aniId
 
-        var aniListData: AniListMedia? = null
+        var animeMetaData: MetaAnimeData? = null
         var tmdbid: Int? = null
+        var kitsuid: String? = null
 
-        if (malId != null) {
+        if (malId != null || aniId != null) {
             try {
-                val query = """
-                    query (${'$'}id: Int) {
-                      Media (idMal: ${'$'}id, type: ANIME) {
-                        id
-                        title {
-                          english
-                          romaji
-                          native
-                        }
-                        description(asHtml: false)
-                        bannerImage
-                        coverImage {
-                          extraLarge
-                        }
-                      }
-                    }
-                """.trimIndent()
-                
-                val response = app.post(
-                    "https://graphql.anilist.co",
-                    data = mapOf("query" to query, "variables" to mapOf("id" to malId)),
-                    headers = mapOf("Content-Type" to "application/json")
-                ).text
-                
-                aniListData = mapper.readValue(response, AniListResponse::class.java)?.data?.media
-                
-                // Fallback TMDB logo search
-                val searchTitle = aniListData?.title?.english ?: aniListData?.title?.romaji ?: title
-                tmdbid = searchTmdbId(searchTitle, type, "98ae14df2b8d8f8f8136499daf79f0e0")
-            } catch (e: Exception) { }
+                val apiUrl = if (malId != null) {
+                    "https://api.ani.zip/mappings?mal_id=$malId"
+                } else {
+                    "https://api.ani.zip/mappings?anilist_id=$aniId"
+                }
+                val syncMetaData = app.get(apiUrl).text
+                animeMetaData = parseAnimeData(syncMetaData)
+                tmdbid = animeMetaData?.mappings?.themoviedbId
+                kitsuid = animeMetaData?.mappings?.kitsuId
+            } catch (e: Exception) {
+            }
         }
 
         val logoUrl = fetchTmdbLogoUrl(
@@ -212,30 +175,57 @@ class AnimeSailProvider : MainAPI() {
             appLangCode = "en"
         )
 
-        val backgroundposter = aniListData?.bannerImage ?: tracker?.cover ?: poster
+        val backgroundposter = animeMetaData?.images?.find { it.coverType == "Fanart" }?.url ?: tracker?.cover
 
         val episodes = document.select("ul.daftar > li").amap {
             val link = fixUrl(it.select("a").attr("href"))
             val name = it.select("a").text()
+
             var episodeNum = Regex("Episode\\s?(\\d+)").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
             if (type == TvType.AnimeMovie && episodeNum == null) {
                 episodeNum = 1
             }
 
+            val episodeKey = episodeNum?.toString()
+            val metaEp = if (episodeKey != null) animeMetaData?.episodes?.get(episodeKey) else null
+
+            val epOverview = metaEp?.overview
+            val finalOverview = if (!epOverview.isNullOrBlank()) {
+                epOverview
+            } else {
+                "Synopsis not yet available."
+            }
+
             newEpisode(link) {
-                this.name = name
+                this.name = if (type == TvType.AnimeMovie) {
+                    animeMetaData?.titles?.get("en") ?: animeMetaData?.titles?.get("ja") ?: title
+                } else {
+                    metaEp?.title?.get("en") ?: metaEp?.title?.get("ja") ?: name
+                }
+
                 this.episode = episodeNum
-                this.description = plotText ?: "Synopsis not yet available."
+                this.score = Score.from10(metaEp?.rating)
+                this.posterUrl = metaEp?.image ?: animeMetaData?.images?.firstOrNull()?.url ?: ""
+                this.description = finalOverview
+                this.addDate(metaEp?.airDateUtc)
+                this.runTime = metaEp?.runtime
             }
         }.reversed()
 
-        val finalPlot = aniListData?.description?.replace(Regex("<.*?>"), "") ?: plotText
+        val apiDescription = animeMetaData?.description?.replace(Regex("<.*?>"), "")
+        val rawPlot = apiDescription ?: animeMetaData?.episodes?.get("1")?.overview
+
+        val finalPlot = if (!rawPlot.isNullOrBlank()) {
+            rawPlot
+        } else {
+            plotText
+        }
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            this.engName = aniListData?.title?.english ?: title
-            this.japName = aniListData?.title?.romaji ?: title
-            this.posterUrl = aniListData?.coverImage?.extraLarge ?: tracker?.image ?: poster
+            this.engName = animeMetaData?.titles?.get("en") ?: title
+            this.japName = animeMetaData?.titles?.get("ja") ?: animeMetaData?.titles?.get("x-jat")
+            this.posterUrl = tracker?.image ?: poster
             this.backgroundPosterUrl = backgroundposter
             try { this.logoUrl = logoUrl } catch (_: Throwable) {}
             this.year = year
@@ -245,7 +235,8 @@ class AnimeSailProvider : MainAPI() {
             this.plot = finalPlot
             this.tags = tagsList
             addMalId(malId)
-            addAniListId(aniListData?.id)
+            addAniListId(aniId?.toIntOrNull())
+            try { addKitsuId(kitsuid) } catch (_: Throwable) {}
         }
     }
 
@@ -394,37 +385,46 @@ class AnimeSailProvider : MainAPI() {
             ?: Qualities.Unknown.value
     }
 
-    // --- Data Classes AniList GraphQL ---
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AniListResponse(
-        @JsonProperty("data") val data: AniListResponseData?
+    data class MetaImage(
+        @JsonProperty("coverType") val coverType: String?,
+        @JsonProperty("url") val url: String?
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AniListResponseData(
-        @JsonProperty("Media") val media: AniListMedia?
+    data class MetaEpisode(
+        @JsonProperty("episode") val episode: String?,
+        @JsonProperty("airDateUtc") val airDateUtc: String?,
+        @JsonProperty("runtime") val runtime: Int?,
+        @JsonProperty("image") val image: String?,
+        @JsonProperty("title") val title: Map<String, String>?,
+        @JsonProperty("overview") val overview: String?,
+        @JsonProperty("rating") val rating: String?,
+        @JsonProperty("finaleType") val finaleType: String?
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AniListMedia(
-        @JsonProperty("id") val id: Int?,
-        @JsonProperty("title") val title: AniListTitle?,
+    data class MetaAnimeData(
+        @JsonProperty("titles") val titles: Map<String, String>?,
         @JsonProperty("description") val description: String?,
-        @JsonProperty("bannerImage") val bannerImage: String?,
-        @JsonProperty("coverImage") val coverImage: AniListCover?
+        @JsonProperty("images") val images: List<MetaImage>?,
+        @JsonProperty("episodes") val episodes: Map<String, MetaEpisode>?,
+        @JsonProperty("mappings") val mappings: MetaMappings? = null
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AniListTitle(
-        @JsonProperty("english") val english: String?,
-        @JsonProperty("romaji") val romaji: String?,
-        @JsonProperty("native") val native: String?
+    data class MetaMappings(
+        @JsonProperty("themoviedb_id") val themoviedbId: Int? = null,
+        @JsonProperty("kitsu_id") val kitsuId: String? = null
     )
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AniListCover(
-        @JsonProperty("extraLarge") val extraLarge: String?
-    )
+    private fun parseAnimeData(jsonString: String): MetaAnimeData? {
+        return try {
+            mapper.readValue(jsonString, MetaAnimeData::class.java)
+        } catch (_: Exception) {
+            null
+        }
+    }
 }
 
 suspend fun fetchTmdbLogoUrl(
