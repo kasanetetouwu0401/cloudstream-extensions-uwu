@@ -1,3 +1,4 @@
+
 package com.oploverz
 
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
@@ -13,7 +14,5 @@ class OploverzProviderPlugin: Plugin() {
         registerExtractorAPI(Qiwi())
         registerExtractorAPI(Filedon())
         registerExtractorAPI(Buzzheavier())
-        registerExtractorAPI(Akirabox())
-        registerExtractorAPI(Acefile())
     }
 }
