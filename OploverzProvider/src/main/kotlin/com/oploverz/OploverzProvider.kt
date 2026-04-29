@@ -169,38 +169,20 @@ class OploverzProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        val html = document.html()
+        val doc = app.get(data).document
 
-        val match = Regex("""data:\s*(\[.*?\]),\s*form:""", RegexOption.DOT_MATCHES_ALL).find(html)
-        if (match != null) {
-            val jsonString = match.groupValues[1]
-            val parsed = AppUtils.parseJson<List<SvelteData>>(jsonString)
-            
-            parsed.forEach { item ->
-                val episode = item.data?.episode ?: return@forEach
-                
-                episode.streamUrl?.forEach { stream ->
-                    val url = stream.url
-                    if (!url.isNullOrEmpty()) {
-                        val quality = getQuality(stream.source ?: "")
-                        loadFixedExtractor(url, quality, data, subtitleCallback, callback)
-                    }
-                }
-                
-                episode.downloadUrl?.forEach { formatInfo ->
-                    formatInfo.resolutions?.forEach { res ->
-                        val quality = getQuality(res.quality ?: "")
-                        res.download_links?.forEach { link ->
-                            val url = link.url
-                            if (!url.isNullOrEmpty()) {
-                                loadFixedExtractor(url, quality, data, subtitleCallback, callback)
-                            }
-                        }
-                    }
+        doc.select("div.flex.flex-row.items-start").amap { selector ->
+            val qualityText = selector.select("div.w-20 > p").text().trim()
+            val quality = getQuality(qualityText)
+
+            selector.select("div.flex.flex-row.flex-wrap > a").amap { server ->
+                val link = server.attr("href")
+                if (link.isNotBlank()) {
+                    loadFixedExtractor(link, quality, data, subtitleCallback, callback)
                 }
             }
         }
+
         return true
     }
 
@@ -237,7 +219,7 @@ class OploverzProvider : MainAPI() {
             quality.contains("720", true) || quality.equals("HD", false) -> Qualities.P720.value
             quality.contains("1080", true) || quality.equals("FHD", false) -> Qualities.P1080.value
             quality.contains("2160", true) || quality.contains("4k", true) -> Qualities.P2160.value
-            else -> Qualities.Unknown.value
+            else -> getQualityFromName(quality)
         }
     }
 
@@ -255,39 +237,5 @@ class OploverzProvider : MainAPI() {
         @JsonProperty("poster") val poster: String? = null,
         @JsonProperty("score") val score: Int? = null,
         @JsonProperty("totalEpisodes") val totalEpisodes: Int? = null,
-    )
-
-    data class SvelteData(
-        @JsonProperty("type") val type: String? = null,
-        @JsonProperty("data") val data: SvelteInnerData? = null
-    )
-
-    data class SvelteInnerData(
-        @JsonProperty("episode") val episode: SvelteEpisode? = null
-    )
-
-    data class SvelteEpisode(
-        @JsonProperty("streamUrl") val streamUrl: List<SvelteStream>? = null,
-        @JsonProperty("downloadUrl") val downloadUrl: List<SvelteDownload>? = null
-    )
-
-    data class SvelteStream(
-        @JsonProperty("source") val source: String? = null,
-        @JsonProperty("url") val url: String? = null
-    )
-
-    data class SvelteDownload(
-        @JsonProperty("format") val format: String? = null,
-        @JsonProperty("resolutions") val resolutions: List<SvelteResolution>? = null
-    )
-
-    data class SvelteResolution(
-        @JsonProperty("quality") val quality: String? = null,
-        @JsonProperty("download_links") val download_links: List<SvelteDownloadLink>? = null
-    )
-
-    data class SvelteDownloadLink(
-        @JsonProperty("host") val host: String? = null,
-        @JsonProperty("url") val url: String? = null
     )
 }
