@@ -134,8 +134,13 @@ class AnimeSailProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = request(url).document
 
-        val title = document.selectFirst("h1.entry-title")?.text().toString()
-            .replace("Subtitle Indonesia", "").trim()
+        // 1. PEMBERSIHAN JUDUL BIAR TRACKER GAK BINGUNG
+        val rawTitle = document.selectFirst("h1.entry-title")?.text() ?: ""
+        val title = rawTitle.replace(Regex("(?i)Subtitle Indonesia|Sub Indo"), "").trim()
+        
+        // Bersihin embel-embel Donghua/Season/Part khusus buat nyari Tracker ID
+        val cleanTitle = title.replace(Regex("(?i)(Season\\s*\\d+|Part\\s*\\d+|Movie|OVA|Donghua)"), "").trim()
+
         val poster = document.selectFirst("div.entry-content > img")?.attr("src")
         val type = getType(document.select("tbody th:contains(Tipe)").next().text().lowercase())
         val year = document.select("tbody th:contains(Dirilis)").next().text().trim().toIntOrNull()
@@ -144,26 +149,52 @@ class AnimeSailProvider : MainAPI() {
         val tagsList = document.select("tbody th:contains(Genre)").next().select("a").map { it.text() }
         val durationText = document.select("tbody th:contains(Durasi)").next().text().trim()
 
-        val tracker = APIHolder.getTracker(listOf(title), TrackerType.getTypes(type), year, true)
-        val malId = tracker?.malId
-        val aniId = tracker?.aniId
+        // Gunakan list judul buat bantu Tracker nemuin ID-nya
+        val tracker = APIHolder.getTracker(listOf(title, cleanTitle), TrackerType.getTypes(type), year, true)
+        
+        // Ambil ID dengan aman biar ga bikin build kamu error sayang~
+        val malId = tracker?.malId?.takeIf { it != 0 }
+        val aniIdString = tracker?.aniId?.toString()?.takeIf { it.isNotBlank() && it != "0" }
 
         var animeMetaData: MetaAnimeData? = null
         var tmdbid: Int? = null
         var kitsuid: String? = null
+        var finalApiPlot: String? = null
 
-        if (malId != null || aniId != null) {
+        // 2. TEMBAK ANIZIP PAKAI ID YANG UDAH DIAMANIN
+        if (malId != null || aniIdString != null) {
             try {
                 val apiUrl = if (malId != null) {
                     "https://api.ani.zip/mappings?mal_id=$malId"
                 } else {
-                    "https://api.ani.zip/mappings?anilist_id=$aniId"
+                    "https://api.ani.zip/mappings?anilist_id=$aniIdString"
                 }
                 val syncMetaData = app.get(apiUrl).text
                 animeMetaData = parseAnimeData(syncMetaData)
                 tmdbid = animeMetaData?.mappings?.themoviedbId
                 kitsuid = animeMetaData?.mappings?.kitsuId
+
+                finalApiPlot = animeMetaData?.description?.replace(Regex("<.*?>"), "") 
+                    ?: animeMetaData?.episodes?.get("1")?.overview
             } catch (e: Exception) {
+                // Biarin aja kalau Anizip nge-throw error (biasanya buat Donghua)
+            }
+        }
+
+        // 3. FALLBACK DEWA: KITSU API (Kalau Anizip kosong/gagal, ini bakal maju nyari sinopsis Donghua)
+        if (finalApiPlot.isNullOrBlank() && cleanTitle.isNotBlank()) {
+            try {
+                val kitsuRes = app.get("https://kitsu.io/api/edge/anime?filter[text]=$cleanTitle").text
+                val kitsuData = JSONObject(kitsuRes).getJSONArray("data").optJSONObject(0)
+                
+                if (kitsuData != null) {
+                    finalApiPlot = kitsuData.getJSONObject("attributes").optString("synopsis")
+                    if (kitsuid == null) {
+                        kitsuid = kitsuData.optString("id")
+                    }
+                }
+            } catch (e: Exception) {
+                // Abaikan jika Kitsu juga gagal
             }
         }
 
@@ -213,11 +244,9 @@ class AnimeSailProvider : MainAPI() {
             }
         }.reversed()
 
-        val apiDescription = animeMetaData?.description?.replace(Regex("<.*?>"), "")
-        val rawPlot = apiDescription ?: animeMetaData?.episodes?.get("1")?.overview
-
-        val finalPlot = if (!rawPlot.isNullOrBlank()) {
-            rawPlot
+        // 4. PENENTUAN PLOT AKHIR
+        val finalPlot = if (!finalApiPlot.isNullOrBlank()) {
+            finalApiPlot
         } else {
             plotText
         }
@@ -235,7 +264,7 @@ class AnimeSailProvider : MainAPI() {
             this.plot = finalPlot
             this.tags = tagsList
             addMalId(malId)
-            addAniListId(aniId?.toIntOrNull())
+            addAniListId(aniIdString?.toIntOrNull())
             try { addKitsuId(kitsuid) } catch (_: Throwable) {}
         }
     }
