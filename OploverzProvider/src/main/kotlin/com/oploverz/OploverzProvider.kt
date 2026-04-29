@@ -9,11 +9,10 @@ import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 
-
 class OploverzProvider : MainAPI() {
     override var mainUrl = "https://anime.oploverz.ac"
     private val backAPI = "https://backapi.oploverz.ac"
-    override var name = "Oploverz🧚"
+    override var name = "Oploverz"
     override val hasMainPage = true
     override var lang = "id"
     override val hasQuickSearch = true
@@ -44,40 +43,69 @@ class OploverzProvider : MainAPI() {
     }
 
     override val mainPage = mainPageOf(
-        "latest" to "Rilis Terbaru",
+        "Rilis Terbaru" to "Rilis Terbaru",
+        "Sedang Trending" to "Sedang Trending",
+        "Tayangan Baru Ditambahkan" to "Tayangan Baru Ditambahkan"
     )
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-val home = app.get("$backAPI/api/episodes?page=$page&pageSize=24&sort=${request.data}")
-            .parsedSafe<Anime>()?.data?.map {
-                it.toSearchResult()
-            } ?: throw ErrorLoadingException()
-        return newHomePageResponse(
-            request.name,
-            home
-        )
-    }
+        if (page > 1) throw ErrorLoadingException()
 
-    private fun Data.toSearchResult(): AnimeSearchResponse {
-        return newAnimeSearchResponse(
-            series?.title ?: "",
-            "$mainUrl/series/${series?.slug}",
-            TvType.Anime
-        ) {
-            this.otherName = series?.japaneseTitle
-            this.posterUrl = series?.poster
-            this.score = Score.from10(series?.score)
-            addSub((episodeNumber?.toIntOrNull() ?: series?.totalEpisodes))
+        val document = app.get(mainUrl).document
+        val home = ArrayList<SearchResponse>()
+
+        if (request.data == "Rilis Terbaru") {
+            document.select("div.bg-card:has(a[href^=/series/])").forEach { element ->
+                val aTag = element.selectFirst("a")
+                val url = aTag?.attr("href") ?: return@forEach
+                val seriesUrl = if (url.contains("/episode/")) url.substringBefore("/episode/") else url
+                
+                val img = aTag.selectFirst("img")
+                val title = img?.attr("alt") ?: element.selectFirst("p.truncate")?.text() ?: ""
+                val poster = img?.attr("src")
+                val epText = element.select("p:contains(Episode)").text()
+                val epNum = epText.filter { it.isDigit() }.toIntOrNull()
+
+                home.add(
+                    newAnimeSearchResponse(title, fixUrl(seriesUrl), TvType.Anime) {
+                        this.posterUrl = poster
+                        addSub(epNum)
+                    }
+                )
+            }
+        } else {
+            val sectionHeader = document.select("p.text-2xl:contains(${request.name})").first()
+            val sectionContainer = sectionHeader?.parent()
+            val addedUrls = mutableSetOf<String>()
+            
+            sectionContainer?.select("a[href^=/series/]")?.forEach { aTag ->
+                val url = aTag.attr("href")
+                if (!addedUrls.contains(url)) {
+                    addedUrls.add(url)
+                    val img = aTag.selectFirst("img")
+                    val title = img?.attr("alt") ?: ""
+                    val poster = img?.attr("src")
+
+                    home.add(
+                        newAnimeSearchResponse(title, fixUrl(url), TvType.Anime) {
+                            this.posterUrl = poster
+                        }
+                    )
+                }
+            }
         }
+
+        if (home.isEmpty()) throw ErrorLoadingException()
+        return newHomePageResponse(request.name, home)
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        return app.get("$backAPI/api/series?q=$query")
+        return app.get("$backAPI/api/series?q=$query", referer = "$mainUrl/")
             .parsedSafe<SearchAnime>()?.data?.map {
                 newAnimeSearchResponse(
                     it.title ?: "",
@@ -100,10 +128,8 @@ val home = app.get("$backAPI/api/episodes?page=$page&pageSize=24&sort=${request.
         val document = app.get(url).body.string().let { Jsoup.parse(it) }
 
         val title = document.selectFirst("p.text-2xl.font-semibold")?.text() ?: ""
-        val poster = document.selectFirst("img.h-full.w-full")
-            ?.attr("src")
-        val tags = document.selectList("Genre").split(",")
-            .map { it.trim() }
+        val poster = document.selectFirst("img.h-full.w-full")?.attr("src")
+        val tags = document.selectList("Genre").split(",").map { it.trim() }
 
         val year = document.selectList("Tanggal Rilis").let {
             Regex("\\d{4}").find(it)?.groupValues?.get(0)?.toIntOrNull()
@@ -135,7 +161,6 @@ val home = app.get("$backAPI/api/episodes?page=$page&pageSize=24&sort=${request.
             addMalId(tracker?.malId)
             addAniListId(tracker?.aniId?.toIntOrNull())
         }
-
     }
 
     override suspend fun loadLinks(
@@ -144,17 +169,38 @@ val home = app.get("$backAPI/api/episodes?page=$page&pageSize=24&sort=${request.
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        val document = app.get(data).document
+        val html = document.html()
 
-        val doc = app.get(data).document
-
-        doc.select("div.flex.flex-row.items-start").amap { selector ->
-            val quality = getQuality(selector.select("div.w-20 > p").text().trim())
-
-            selector.select("div.flex.flex-row.flex-wrap > a").amap { server ->
-                loadFixedExtractor(server.attr("href"), quality, null, subtitleCallback, callback)
+        val match = Regex("""data:\s*(\[.*?\]),\s*form:""", RegexOption.DOT_MATCHES_ALL).find(html)
+        if (match != null) {
+            val jsonString = match.groupValues[1]
+            val parsed = AppUtils.parseJson<List<SvelteData>>(jsonString)
+            
+            parsed.forEach { item ->
+                val episode = item.data?.episode ?: return@forEach
+                
+                episode.streamUrl?.forEach { stream ->
+                    val url = stream.url
+                    if (!url.isNullOrEmpty()) {
+                        val quality = getQuality(stream.source ?: "")
+                        loadFixedExtractor(url, quality, data, subtitleCallback, callback)
+                    }
+                }
+                
+                episode.downloadUrl?.forEach { formatInfo ->
+                    formatInfo.resolutions?.forEach { res ->
+                        val quality = getQuality(res.quality ?: "")
+                        res.download_links?.forEach { link ->
+                            val url = link.url
+                            if (!url.isNullOrEmpty()) {
+                                loadFixedExtractor(url, quality, data, subtitleCallback, callback)
+                            }
+                        }
+                    }
+                }
             }
         }
-
         return true
     }
 
@@ -186,32 +232,17 @@ val home = app.get("$backAPI/api/episodes?page=$page&pageSize=24&sort=${request.
 
     private fun getQuality(quality: String) : Int {
         return when {
-            quality.equals("Mini", false) -> Qualities.P480.value
-            quality.equals("HD", false) -> Qualities.P720.value
-            quality.equals("FHD", false) -> Qualities.P1080.value
-            else -> {
-                getQualityFromName(quality)
-            }
+            quality.contains("360", true) -> Qualities.P360.value
+            quality.contains("480", true) || quality.equals("Mini", false) -> Qualities.P480.value
+            quality.contains("720", true) || quality.equals("HD", false) -> Qualities.P720.value
+            quality.contains("1080", true) || quality.equals("FHD", false) -> Qualities.P1080.value
+            quality.contains("2160", true) || quality.contains("4k", true) -> Qualities.P2160.value
+            else -> Qualities.Unknown.value
         }
     }
 
-    data class Sources(
-        @JsonProperty("format") val format: String? = null,
-        @JsonProperty("url") val url: ArrayList<String>? = arrayListOf(),
-    )
-
-    data class Anime(
-        @JsonProperty("data") val data: ArrayList<Data>? = arrayListOf(),
-    )
-
     data class SearchAnime(
         @JsonProperty("data") val data: ArrayList<Series>? = arrayListOf(),
-    )
-
-    data class Data(
-        @JsonProperty("episodeNumber") val episodeNumber: String? = null,
-        @JsonProperty("subbed") val subbed: String? = null,
-        @JsonProperty("series") val series: Series? = null,
     )
 
     data class Series(
@@ -226,4 +257,37 @@ val home = app.get("$backAPI/api/episodes?page=$page&pageSize=24&sort=${request.
         @JsonProperty("totalEpisodes") val totalEpisodes: Int? = null,
     )
 
+    data class SvelteData(
+        @JsonProperty("type") val type: String? = null,
+        @JsonProperty("data") val data: SvelteInnerData? = null
+    )
+
+    data class SvelteInnerData(
+        @JsonProperty("episode") val episode: SvelteEpisode? = null
+    )
+
+    data class SvelteEpisode(
+        @JsonProperty("streamUrl") val streamUrl: List<SvelteStream>? = null,
+        @JsonProperty("downloadUrl") val downloadUrl: List<SvelteDownload>? = null
+    )
+
+    data class SvelteStream(
+        @JsonProperty("source") val source: String? = null,
+        @JsonProperty("url") val url: String? = null
+    )
+
+    data class SvelteDownload(
+        @JsonProperty("format") val format: String? = null,
+        @JsonProperty("resolutions") val resolutions: List<SvelteResolution>? = null
+    )
+
+    data class SvelteResolution(
+        @JsonProperty("quality") val quality: String? = null,
+        @JsonProperty("download_links") val download_links: List<SvelteDownloadLink>? = null
+    )
+
+    data class SvelteDownloadLink(
+        @JsonProperty("host") val host: String? = null,
+        @JsonProperty("url") val url: String? = null
+    )
 }
