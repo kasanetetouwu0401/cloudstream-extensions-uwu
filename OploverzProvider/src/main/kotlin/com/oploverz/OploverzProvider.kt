@@ -43,7 +43,7 @@ class OploverzProvider : MainAPI() {
     }
 
     override val mainPage = mainPageOf(
-        "Rilis Terbaru" to "Rilis Terbaru",
+        "latest" to "Rilis Terbaru",
         "Sedang Trending" to "Sedang Trending",
         "Tayangan Baru Ditambahkan" to "Tayangan Baru Ditambahkan"
     )
@@ -52,31 +52,34 @@ class OploverzProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        if (page > 1) throw ErrorLoadingException()
-
-        val document = app.get(mainUrl).document
         val home = ArrayList<SearchResponse>()
+        var hasNextPage = false
 
-        if (request.data == "Rilis Terbaru") {
-            document.select("div.bg-card:has(a[href^=/series/])").forEach { element ->
-                val aTag = element.selectFirst("a")
-                val url = aTag?.attr("href") ?: return@forEach
-                val seriesUrl = if (url.contains("/episode/")) url.substringBefore("/episode/") else url
-                
-                val img = aTag.selectFirst("img")
-                val title = img?.attr("alt") ?: element.selectFirst("p.truncate")?.text() ?: ""
-                val poster = img?.attr("src")
-                val epText = element.select("p:contains(Episode)").text()
-                val epNum = epText.filter { it.isDigit() }.toIntOrNull()
-
+        if (request.data == "latest") {
+            val response = app.get("$backAPI/api/episodes?page=$page&pageSize=24&sort=${request.data}", referer = "$mainUrl/")
+                .parsedSafe<Anime>()
+            
+            response?.data?.forEach { item ->
+                val series = item.series ?: return@forEach
                 home.add(
-                    newAnimeSearchResponse(title, fixUrl(seriesUrl), TvType.Anime) {
-                        this.posterUrl = poster
-                        addSub(epNum)
+                    newAnimeSearchResponse(
+                        series.title ?: "",
+                        "$mainUrl/series/${series.slug}",
+                        TvType.Anime
+                    ) {
+                        this.otherName = series.japaneseTitle
+                        this.posterUrl = series.poster
+                        this.score = Score.from10(series.score)
+                        addSub(item.episodeNumber?.toIntOrNull() ?: series.totalEpisodes)
                     }
                 )
             }
+            hasNextPage = home.isNotEmpty()
+            
         } else {
+            if (page > 1) return newHomePageResponse(request.name, home, false)
+
+            val document = app.get(mainUrl).document
             val sectionHeader = document.select("p.text-2xl:contains(${request.name})").first()
             val sectionContainer = sectionHeader?.parent()
             val addedUrls = mutableSetOf<String>()
@@ -96,10 +99,11 @@ class OploverzProvider : MainAPI() {
                     )
                 }
             }
+            hasNextPage = false
         }
 
         if (home.isEmpty()) throw ErrorLoadingException()
-        return newHomePageResponse(request.name, home)
+        return newHomePageResponse(request.name, home, hasNextPage)
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
@@ -223,17 +227,23 @@ class OploverzProvider : MainAPI() {
         }
     }
 
+    data class Anime(
+        @JsonProperty("data") val data: ArrayList<Data>? = arrayListOf(),
+    )
+
     data class SearchAnime(
         @JsonProperty("data") val data: ArrayList<Series>? = arrayListOf(),
     )
 
+    data class Data(
+        @JsonProperty("episodeNumber") val episodeNumber: String? = null,
+        @JsonProperty("series") val series: Series? = null,
+    )
+
     data class Series(
-        @JsonProperty("id") val id: Int? = null,
-        @JsonProperty("seriesId") val seriesId: Int? = null,
         @JsonProperty("title") val title: String? = null,
         @JsonProperty("japaneseTitle") val japaneseTitle: String? = null,
         @JsonProperty("slug") val slug: String? = null,
-        @JsonProperty("releaseDate") val releaseDate: String? = null,
         @JsonProperty("poster") val poster: String? = null,
         @JsonProperty("score") val score: Int? = null,
         @JsonProperty("totalEpisodes") val totalEpisodes: Int? = null,
