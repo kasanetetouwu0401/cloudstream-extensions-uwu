@@ -4,8 +4,8 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import kotlinx.coroutines.runBlocking
 
+// 1. Qiwi
 open class Qiwi : ExtractorApi() {
     override val name = "Qiwi"
     override val mainUrl = "https://qiwi.gg"
@@ -27,11 +27,14 @@ open class Qiwi : ExtractorApi() {
                     this.name,
                     this.name,
                     source,
-                    referer = "$mainUrl/",
-                    quality = getIndexQuality(title),
-                    type = INFER_TYPE,
-                    headers = mapOf("Range" to "bytes=0-")
-                )
+                    INFER_TYPE
+                ) {
+                    this.referer = "$mainUrl/"
+                    this.quality = getIndexQuality(title)
+                    this.headers = mapOf(
+                        "Range" to "bytes=0-",
+                    )
+                }
             )
         }
     }
@@ -42,6 +45,7 @@ open class Qiwi : ExtractorApi() {
     }
 }
 
+// 2. Filedon
 open class Filedon : ExtractorApi() {
     override val name = "Filedon"
     override val mainUrl = "https://filedon.co"
@@ -70,9 +74,7 @@ open class Filedon : ExtractorApi() {
                     this.name,
                     this.name,
                     video,
-                    referer = "$mainUrl/",
-                    quality = Qualities.Unknown.value,
-                    type = INFER_TYPE
+                    INFER_TYPE
                 )
             )
         }
@@ -87,6 +89,7 @@ open class Filedon : ExtractorApi() {
     )
 }
 
+// 3. Buzzheavier
 open class Buzzheavier : ExtractorApi() {
     override val name = "Buzzheavier"
     override val mainUrl = "https://buzzheavier.com"
@@ -111,15 +114,16 @@ open class Buzzheavier : ExtractorApi() {
                     this.name,
                     this.name,
                     video,
-                    referer = "$mainUrl/",
-                    quality = Qualities.Unknown.value,
-                    type = INFER_TYPE
-                )
+                    INFER_TYPE
+                ) {
+                    this.referer = "$mainUrl/"
+                }
             )
         }
     }
 }
 
+// 4. Akirabox
 open class Akirabox : ExtractorApi() {
     override val name = "Akirabox"
     override val mainUrl = "https://akirabox.com"
@@ -140,15 +144,16 @@ open class Akirabox : ExtractorApi() {
                     this.name,
                     this.name,
                     source,
-                    referer = url,
-                    quality = Qualities.Unknown.value,
-                    type = INFER_TYPE
-                )
+                    INFER_TYPE
+                ) {
+                    this.referer = url
+                }
             )
         }
     }
 }
 
+// 5. Acefile / Google Drive
 open class Acefile : ExtractorApi() {
     override val name = "Acefile"
     override val mainUrl = "https://acefile.co"
@@ -169,10 +174,10 @@ open class Acefile : ExtractorApi() {
                     this.name,
                     "Google Drive (Acefile)",
                     source,
-                    referer = url,
-                    quality = Qualities.Unknown.value,
-                    type = INFER_TYPE
-                )
+                    INFER_TYPE
+                ) {
+                    this.referer = url
+                }
             )
         }
     }
