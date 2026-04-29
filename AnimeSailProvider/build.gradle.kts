@@ -1,13 +1,13 @@
 // use an integer for version numbers
-version = 3
+version = 6
 
 
 cloudstream {
     language = "id"
     // All of these properties are optional, you can safely remove them
 
-     description = "AnimeSail — Streaming Anime, Donghua Subtitle Indonesia"
-     authors = listOf("Hann")
+    description = "AnimeSail — Streaming Anime, Donghua Subtitle Indonesia"
+     authors = listOf("Miku")
 
     /**
      * Status int as the following:

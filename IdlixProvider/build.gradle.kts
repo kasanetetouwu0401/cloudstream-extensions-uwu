@@ -1,13 +1,13 @@
 // use an integer for version numbers
-version = 6
+version = 2
 
 
 cloudstream {
     language = "id"
     // All of these properties are optional, you can safely remove them
 
-    // description = "Lorem Ipsum"
-     authors = listOf("Hexated,Phisher98")
+     description = "Idlix — Streaming Movie and TV Series"
+     authors = listOf("Miku")
 
     /**
      * Status int as the following:
@@ -20,9 +20,8 @@ cloudstream {
     tvTypes = listOf(
         "TvSeries",
         "Movie",
-        "Anime",
         "AsianDrama",
     )
-    
+    isCrossPlatform = true
     iconUrl = "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=http://idlixian.com&size=16"
 }
