@@ -207,6 +207,15 @@ class AnimeSailProvider : MainAPI() {
             }
         }.reversed()
 
+        val apiDescription = animeMetaData?.description?.replace(Regex("<.*?>"), "")
+        val rawPlot = apiDescription ?: animeMetaData?.episodes?.get("1")?.overview
+
+        val finalPlot = if (!rawPlot.isNullOrBlank()) {
+            rawPlot
+        } else {
+            plotText
+        }
+
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.engName = animeMetaData?.titles?.get("en") ?: title
             this.japName = animeMetaData?.titles?.get("ja") ?: animeMetaData?.titles?.get("x-jat")
@@ -217,7 +226,7 @@ class AnimeSailProvider : MainAPI() {
             this.duration = getDurationFromString(durationText)
             addEpisodes(DubStatus.Subbed, episodes)
             this.showStatus = getStatus(statusText)
-            this.plot = plotText
+            this.plot = finalPlot
             this.tags = tagsList
             addMalId(malId)
             addAniListId(tracker?.aniId?.toIntOrNull())
