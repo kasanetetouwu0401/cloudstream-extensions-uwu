@@ -146,14 +146,16 @@ class AnimeSailProvider : MainAPI() {
 
         val tracker = APIHolder.getTracker(listOf(title), TrackerType.getTypes(type), year, true)
         val malId = tracker?.malId
+        val aniId = tracker?.aniId
 
         var animeMetaData: MetaAnimeData? = null
         var tmdbid: Int? = null
         var kitsuid: String? = null
 
-        if (malId != null) {
+        // Miku ganti malId jadi aniId untuk call API ini ya sayang~
+        if (aniId != null) {
             try {
-                val syncMetaData = app.get("https://api.ani.zip/mappings?mal_id=$malId").text
+                val syncMetaData = app.get("https://api.ani.zip/mappings?anilist_id=$aniId").text
                 animeMetaData = parseAnimeData(syncMetaData)
                 tmdbid = animeMetaData?.mappings?.themoviedbId
                 kitsuid = animeMetaData?.mappings?.kitsuId
@@ -229,7 +231,7 @@ class AnimeSailProvider : MainAPI() {
             this.plot = finalPlot
             this.tags = tagsList
             addMalId(malId)
-            addAniListId(tracker?.aniId?.toIntOrNull())
+            addAniListId(aniId?.toIntOrNull())
             try { addKitsuId(kitsuid) } catch (_: Throwable) {}
         }
     }
