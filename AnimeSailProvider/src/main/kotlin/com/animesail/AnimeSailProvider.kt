@@ -6,7 +6,6 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
-import com.lagradost.cloudstream3.LoadResponse.Companion.addKitsuId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.mvvm.safeApiCall
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -168,26 +167,41 @@ class AnimeSailProvider : MainAPI() {
         val tracker = APIHolder.getTracker(listOf(title), TrackerType.getTypes(type), year, true)
         val malId = tracker?.malId
 
-        var malSyncData: MalSyncResponse? = null
+        var aniListData: AniListMedia? = null
         var tmdbid: Int? = null
-        var kitsuid: String? = null
 
         if (malId != null) {
             try {
-                // Fetch data dari MAL-Sync Cache di GitHub
-                val syncUrl = "https://raw.githubusercontent.com/MAL-Sync/Cache/master/data/myanimelist/anime/$malId.json"
-                val responseText = app.get(syncUrl).text
-                malSyncData = mapper.readValue(responseText, MalSyncResponse::class.java)
-
-                // Ambil Kitsu ID dari external mappings
-                kitsuid = malSyncData?.external?.find { it.site?.equals("Kitsu", true) == true }?.id
-
-                // Fallback pencarian TMDB ID menggunakan judul dari MAL-Sync atau web
-                val searchTitle = malSyncData?.title ?: title
+                val query = """
+                    query (${'$'}id: Int) {
+                      Media (idMal: ${'$'}id, type: ANIME) {
+                        id
+                        title {
+                          english
+                          romaji
+                          native
+                        }
+                        description(asHtml: false)
+                        bannerImage
+                        coverImage {
+                          extraLarge
+                        }
+                      }
+                    }
+                """.trimIndent()
+                
+                val response = app.post(
+                    "https://graphql.anilist.co",
+                    data = mapOf("query" to query, "variables" to mapOf("id" to malId)),
+                    headers = mapOf("Content-Type" to "application/json")
+                ).text
+                
+                aniListData = mapper.readValue(response, AniListResponse::class.java)?.data?.media
+                
+                // Fallback TMDB logo search
+                val searchTitle = aniListData?.title?.english ?: aniListData?.title?.romaji ?: title
                 tmdbid = searchTmdbId(searchTitle, type, "98ae14df2b8d8f8f8136499daf79f0e0")
-            } catch (e: Exception) {
-                // Abaikan kalau gagal hit, data fallback dari web tetap jalan
-            }
+            } catch (e: Exception) { }
         }
 
         val logoUrl = fetchTmdbLogoUrl(
@@ -198,12 +212,11 @@ class AnimeSailProvider : MainAPI() {
             appLangCode = "en"
         )
 
-        val backgroundposter = tracker?.cover ?: malSyncData?.image ?: poster
+        val backgroundposter = aniListData?.bannerImage ?: tracker?.cover ?: poster
 
         val episodes = document.select("ul.daftar > li").amap {
             val link = fixUrl(it.select("a").attr("href"))
             val name = it.select("a").text()
-
             var episodeNum = Regex("Episode\\s?(\\d+)").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
             if (type == TvType.AnimeMovie && episodeNum == null) {
@@ -211,31 +224,28 @@ class AnimeSailProvider : MainAPI() {
             }
 
             newEpisode(link) {
-                this.name = if (type == TvType.AnimeMovie) {
-                    malSyncData?.title ?: title
-                } else {
-                    name
-                }
+                this.name = name
                 this.episode = episodeNum
                 this.description = plotText ?: "Synopsis not yet available."
             }
         }.reversed()
 
+        val finalPlot = aniListData?.description?.replace(Regex("<.*?>"), "") ?: plotText
+
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            this.engName = malSyncData?.title ?: title
-            this.japName = title
-            this.posterUrl = tracker?.image ?: malSyncData?.image ?: poster
+            this.engName = aniListData?.title?.english ?: title
+            this.japName = aniListData?.title?.romaji ?: title
+            this.posterUrl = aniListData?.coverImage?.extraLarge ?: tracker?.image ?: poster
             this.backgroundPosterUrl = backgroundposter
             try { this.logoUrl = logoUrl } catch (_: Throwable) {}
             this.year = year
             this.duration = getDurationFromString(durationText)
             addEpisodes(DubStatus.Subbed, episodes)
             this.showStatus = getStatus(statusText)
-            this.plot = plotText
+            this.plot = finalPlot
             this.tags = tagsList
             addMalId(malId)
-            addAniListId(tracker?.aniId?.toIntOrNull())
-            try { addKitsuId(kitsuid) } catch (_: Throwable) {}
+            addAniListId(aniListData?.id)
         }
     }
 
@@ -384,19 +394,36 @@ class AnimeSailProvider : MainAPI() {
             ?: Qualities.Unknown.value
     }
 
-    // --- Data Classes MAL-Sync ---
+    // --- Data Classes AniList GraphQL ---
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MalSyncResponse(
-        @JsonProperty("id") val malId: Int?,
-        @JsonProperty("title") val title: String?,
-        @JsonProperty("image") val image: String?,
-        @JsonProperty("external") val external: List<ExternalMapping>? = emptyList()
+    data class AniListResponse(
+        @JsonProperty("data") val data: AniListResponseData?
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class ExternalMapping(
-        @JsonProperty("site") val site: String?,
-        @JsonProperty("id") val id: String?
+    data class AniListResponseData(
+        @JsonProperty("Media") val media: AniListMedia?
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniListMedia(
+        @JsonProperty("id") val id: Int?,
+        @JsonProperty("title") val title: AniListTitle?,
+        @JsonProperty("description") val description: String?,
+        @JsonProperty("bannerImage") val bannerImage: String?,
+        @JsonProperty("coverImage") val coverImage: AniListCover?
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniListTitle(
+        @JsonProperty("english") val english: String?,
+        @JsonProperty("romaji") val romaji: String?,
+        @JsonProperty("native") val native: String?
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AniListCover(
+        @JsonProperty("extraLarge") val extraLarge: String?
     )
 }
 
