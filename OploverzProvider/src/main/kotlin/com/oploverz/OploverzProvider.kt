@@ -10,7 +10,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 
 class OploverzProvider : MainAPI() {
-    override var mainUrl = "https://anime.oploverz.ac"
+    override var mainUrl = "https://vip.oploverz.ltd"
     private val backAPI = "https://backapi.oploverz.ac"
     override var name = "Oploverz"
     override val hasMainPage = true
@@ -56,7 +56,7 @@ class OploverzProvider : MainAPI() {
         var hasNextPage = false
 
         if (request.data == "latest") {
-            val response = app.get("$backAPI/api/episodes?page=$page&pageSize=100&sort=${request.data}", referer = "$mainUrl/")
+            val response = app.get("$backAPI/api/episodes?page=$page&pageSize=50&sort=${request.data}", referer = "$mainUrl/")
                 .parsedSafe<Anime>()
             
             response?.data?.forEach { item ->
